@@ -1,0 +1,16 @@
+{
+  "name": "@pace-agent/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "pace": "./dist/index.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch"
+  },
+  "dependencies": {
+    "@pace-agent/core": "workspace:*"
+  }
+}
