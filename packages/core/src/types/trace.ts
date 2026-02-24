@@ -53,6 +53,19 @@ export interface CheckpointEvent extends TraceEventBase {
   progress: number;
 }
 
+export interface RelevanceScoringEvent extends TraceEventBase {
+  type: "RELEVANCE_SCORING";
+  /** Actual scoring mode used */
+  mode: "llm" | "keyword";
+  /** Number of L0 resources that were scored */
+  candidateCount: number;
+  /** Number of resources that met the threshold for L1 promotion */
+  selectedCount: number;
+  latencyMs: number;
+  /** True when LLM scoring failed and keyword fallback was used */
+  fallbackUsed?: boolean;
+}
+
 /** Union of all trace event types */
 export type TraceEvent =
   | LLMCallStartEvent
@@ -61,7 +74,8 @@ export type TraceEvent =
   | ToolInvokedEvent
   | PolicyDecisionEvent
   | StopTriggeredEvent
-  | CheckpointEvent;
+  | CheckpointEvent
+  | RelevanceScoringEvent;
 
 /**
  * TraceWriter — interface for recording trace events.

@@ -33,6 +33,17 @@ export const PaceConfigSchema = z.object({
       format: z.enum(["jsonl"]).default("jsonl"),
     })
     .default({}),
+
+  scoring: z
+    .object({
+      /** "keyword": fast path (default). "llm": always use LLM. "auto": use LLM when candidateCount >= llmThresholdCandidates */
+      mode: z.enum(["keyword", "llm", "auto"]).default("keyword"),
+      /** Candidate threshold for "auto" mode to switch to LLM scoring */
+      llmThresholdCandidates: z.number().positive().default(10),
+      /** Max tokens for the scoring LLM call */
+      scoringMaxTokens: z.number().positive().default(256),
+    })
+    .default({}),
 });
 
 /** Inferred TypeScript type from the Zod schema */

@@ -250,4 +250,56 @@ describe("PaceRuntime — agentic loop", () => {
     expect(toolMessages).toHaveLength(1);
     expect(toolMessages[0]!.toolCallId).toBe("tc1");
   });
+
+  // ── Phase 3: scoringLlm option ────────────────────────────────────────────
+
+  it("passes scoringLlm to ContextCompiler and emits RELEVANCE_SCORING event", async () => {
+    const toolProvider = makeProvider("tool", ["tool:search"]);
+
+    const scoringLlm: LLMAdapter = {
+      chat: vi.fn().mockResolvedValue({
+        content: JSON.stringify([{ id: "tool:search", score: 0.9 }]),
+        usage: { inputTokens: 50, outputTokens: 20 },
+        finishReason: "stop",
+      } satisfies LLMResponse),
+      estimateTokens: (t) => Math.ceil(t.length / 4),
+    };
+
+    const runtime = new PaceRuntime({
+      llm: makeAdapter(),
+      tracer,
+      resources: [toolProvider],
+      scoringLlm,
+      config: { scoring: { mode: "llm" } },
+    });
+
+    const result = await runtime.run("search for something");
+
+    const scoringEvent = result.trace.find((e) => e.type === "RELEVANCE_SCORING");
+    expect(scoringEvent).toBeDefined();
+    expect((scoringEvent as { mode: string }).mode).toBe("llm");
+  });
+
+  it("scoringLlm is not invoked in keyword mode", async () => {
+    const toolProvider = makeProvider("tool", ["tool:search"]);
+
+    const scoringLlm: LLMAdapter = {
+      chat: vi.fn(),
+      estimateTokens: (t) => Math.ceil(t.length / 4),
+    };
+
+    const runtime = new PaceRuntime({
+      llm: makeAdapter(),
+      tracer,
+      resources: [toolProvider],
+      scoringLlm,
+      config: { scoring: { mode: "keyword" } },
+    });
+
+    await runtime.run("search for something");
+
+    // scoringLlm.chat should NOT have been called in keyword mode
+    expect(scoringLlm.chat).not.toHaveBeenCalled();
+  });
 });
+

@@ -2,7 +2,7 @@
 
 > Progressive Agent Computing Engine — a disciplined runtime for AI agents.
 
-Pace is a Node.js/TypeScript agent runtime framework that dramatically reduces context token consumption through progressive resource loading (L0/L1/L2), while providing built-in budget control, security policy enforcement, and full observability.
+Pace is a Node.js/TypeScript agent runtime framework that dramatically reduces context token consumption through progressive resource loading (L0/L1/L2), while providing built-in budget control, security policy enforcement, LLM-assisted relevance scoring, and full observability.
 
 [中文文档](./README.zh.md)
 
@@ -14,7 +14,7 @@ Pace is a Node.js/TypeScript agent runtime framework that dramatically reduces c
 │  │ Resource  │  │   Context     │  │  Budget   │ │
 │  │ Registry  │──│   Compiler    │──│ Scheduler │ │
 │  └──────────┘  └───────────────┘  └──────────┘ │
-│       │                                    │     │
+│       │          ↑ LLM Scoring            │     │
 │  ┌──────────┐  ┌───────────────┐  ┌──────────┐ │
 │  │   Tool    │  │   Security    │  │Termination│ │
 │  │  Runtime  │──│  Controller   │──│Controller │ │
@@ -33,7 +33,9 @@ Pace is a Node.js/TypeScript agent runtime framework that dramatically reduces c
 
 **Progressive Loading** — Resources follow a three-layer protocol. L0 indexes (~20–50 tokens each) are always injected; L1 previews load only for relevant resources; L2 full payloads load only at execution time. This cuts context token usage by 40–80% compared to full injection.
 
-**Relevance Scoring** — The ContextCompiler scores each resource against the user query using keyword matching (weight 0.6) plus a sticky bonus (weight 0.4) for resources used in previous turns. Only resources above threshold are promoted to L1.
+**Relevance Scoring** — The ContextCompiler supports two scoring paths:
+- *Keyword mode* (default, no extra API call): keyword matching (weight 0.6) + sticky bonus (weight 0.4) for resources used in previous turns.
+- *LLM-assisted mode* (Phase 3, optional): provide a `scoringLlm` adapter (e.g. a cheap Haiku model) to get precise 0.0–1.0 scores from the LLM. Sticky bonus is applied on top. Falls back to keyword scoring automatically on error. Emits a `RELEVANCE_SCORING` trace event with mode, latency, and fallback status.
 
 **Budget Control** — BudgetScheduler tracks token usage across both the full task and each individual turn, ensuring the runtime stays within configurable limits.
 
@@ -43,7 +45,7 @@ Pace is a Node.js/TypeScript agent runtime framework that dramatically reduces c
 
 **Agentic Tool Loop** — When the LLM returns `tool_calls`, Pace automatically executes the tools (with security checks), injects results, and calls the LLM again — repeating until the model produces a final reply or a termination condition is triggered.
 
-**Full Observability** — Every resource load, LLM call, tool invocation, and policy decision emits a structured JSONL trace event with token counts and latency, written to `.pace/traces/`.
+**Full Observability** — Every resource load, LLM call, tool invocation, policy decision, and relevance scoring step emits a structured JSONL trace event with token counts and latency, written to `.pace/traces/`.
 
 ## Quick Start
 
@@ -51,11 +53,11 @@ Pace is a Node.js/TypeScript agent runtime framework that dramatically reduces c
 pnpm install
 ```
 
+### Using OpenAI (original)
+
 ```typescript
 import { Pace } from "@pace-agent/core";
 import { OpenAIAdapter } from "@pace-agent/llm-openai";
-import { SecurityController } from "@pace-agent/security";
-import { TerminationController } from "@pace-agent/termination";
 
 const agent = new Pace({
   llm: new OpenAIAdapter({ model: "gpt-4o" }),
@@ -75,16 +77,101 @@ console.log(result.stopped);           // true if terminated by policy
 console.log(result.trace);             // TraceEvent[] — resource loads, LLM calls, tool invocations
 ```
 
+### Using Anthropic + Config File + SQLite Memory + LLM Scoring (Phase 3)
+
+```typescript
+import { loadPaceConfig } from "@pace-agent/config-loader";
+import { Pace } from "@pace-agent/core";
+import { AnthropicAdapter } from "@pace-agent/llm-anthropic";
+import { SQLiteMemoryProvider } from "@pace-agent/memory-sqlite";
+
+const { config } = await loadPaceConfig();   // reads pace.config.yaml
+
+const memory = new SQLiteMemoryProvider({ dbPath: ".pace/memory.db" });
+
+const agent = new Pace({
+  llm: new AnthropicAdapter({ model: "claude-opus-4-6" }),
+  resources: [myToolProvider, memory],
+  config,
+  // Cheap small model for scoring — does NOT count against task token budget
+  scoringLlm: new AnthropicAdapter({ model: "claude-haiku-4-5-20251001" }),
+});
+
+const result = await agent.run("Find TypeScript 5.4 release notes");
+
+// Inspect scoring events
+result.trace
+  .filter(e => e.type === "RELEVANCE_SCORING")
+  .forEach(e => console.log(e));
+// → { mode: "llm", candidateCount: 8, selectedCount: 2, latencyMs: 340 }
+```
+
 ## Packages
 
 | Package | Status | Description |
 |---------|--------|-------------|
-| `@pace-agent/core` | ✅ Phase 2 | Core runtime: ResourceRegistry, ContextCompiler, BudgetScheduler, JsonlTracer, PaceRuntime (with agentic loop) |
-| `@pace-agent/llm-openai` | ✅ Phase 2 | OpenAI-compatible LLM adapter with tool_calls support |
+| `@pace-agent/core` | ✅ Phase 3 | Core runtime: ResourceRegistry, ContextCompiler (with LLM scoring), BudgetScheduler, JsonlTracer, PaceRuntime |
+| `@pace-agent/llm-openai` | ✅ Phase 1 | OpenAI-compatible LLM adapter with tool_calls support |
+| `@pace-agent/llm-anthropic` | ✅ Phase 3 | Anthropic Claude adapter with automatic consecutive-tool-message merging |
+| `@pace-agent/config-loader` | ✅ Phase 3 | YAML/JSON config loader with env-var interpolation and auto-search |
+| `@pace-agent/memory-sqlite` | ✅ Phase 3 | SQLite memory provider with FTS5 full-text index and TTL expiry |
 | `@pace-agent/security` | ✅ Phase 2 | SecurityController with S0 rule engine and open/balanced/strict profiles |
 | `@pace-agent/termination` | ✅ Phase 2 | TerminationController with budget/retry/stagnation/risk stop conditions |
 | `@pace-agent/memory-file` | ✅ Phase 2 | File-system MemoryProvider with p0/p1/p2 priority tiers and TTL expiry |
 | `@pace-agent/cli` | ✅ Phase 1 | CLI demo with token savings comparison |
+
+## Phase 3 — New Packages
+
+### @pace-agent/llm-anthropic
+
+Implements `LLMAdapter` for Anthropic Claude. Key message-format conversions from Pace's OpenAI-style internal format to Anthropic API format:
+
+| Pace internal | Anthropic API |
+|---------------|---------------|
+| `role:"system"` message | Separate `system` parameter |
+| `role:"assistant"` + `toolCalls` | `content: [{type:"tool_use",...}]` |
+| Consecutive `role:"tool"` messages | Merged into a single `user` message with multiple `tool_result` blocks |
+
+`finishReason` mapping: `end_turn/stop_sequence → "stop"`, `tool_use → "tool_calls"`, `max_tokens → "length"`.
+
+### @pace-agent/config-loader
+
+Auto-search order: `pace.config.yaml` → `pace.config.yml` → `pace.config.json`
+
+```yaml
+# pace.config.yaml
+budget:
+  maxTokensPerTask: 30000
+  maxTokensPerTurn: 5000
+security: balanced
+scoring:
+  mode: auto                    # keyword | llm | auto
+  llmThresholdCandidates: 10    # switch to LLM scoring when candidates >= 10
+trace:
+  output: .pace/traces/
+# env-var interpolation (resolved before YAML parse):
+# ${VAR}          → required, throws if missing
+# ${VAR:-default} → fallback value
+# ${VAR:?message} → throws with custom message
+```
+
+### @pace-agent/memory-sqlite
+
+SQLite-backed drop-in replacement for `FileMemoryProvider`:
+
+```typescript
+const memory = new SQLiteMemoryProvider({
+  dbPath: ".pace/memory.db",   // or ":memory:" for tests
+  summaryMaxChars: 500,
+  wal: true,
+});
+await memory.write(
+  { name: "Project context", description: "", priority: "P0", tags: ["project"], ttlDays: 30 },
+  "We are building a TypeScript agent runtime called Pace."
+);
+```
+
+TTL filtering via SQL, FTS5 virtual table with insert/update/delete triggers (ready for Phase 4 full-text search).
 
 ## Implementing a ToolProvider
 
@@ -129,46 +216,11 @@ class MyToolProvider implements ResourceProvider, ToolProvider {
 }
 ```
 
-## Using SecurityController
-
-```typescript
-import { SecurityController } from "@pace-agent/security";
-
-const agent = new Pace({
-  llm,
-  resources: [myToolProvider],
-  securityPolicy: new SecurityController({ profile: "balanced" }),
-});
-```
-
-S0 hard rules (applied regardless of profile):
-- Shell command execution → always denied
-- Global-scope delete → always denied
-- Critical risk level → always denied
-- Irreversible batch operations → escalated to human approval
-
-## Using FileMemoryProvider
-
-```typescript
-import { FileMemoryProvider } from "@pace-agent/memory-file";
-
-const memory = new FileMemoryProvider(".pace/memory");
-await memory.init();
-
-const agent = new Pace({ llm, resources: [memory] });
-
-// Write a memory entry
-await memory.write(
-  { name: "Project Context", description: "Current project", priority: "P0", tags: ["project"] },
-  "We are building a TypeScript agent runtime called Pace."
-);
-```
-
 ## Development
 
 ### Prerequisites
 
-- Node.js >= 22
+- Node.js >= 22 (Node 20 works with a WARN)
 - pnpm >= 9
 
 ### Setup
@@ -182,7 +234,7 @@ pnpm install
 ### Commands
 
 ```bash
-pnpm test         # Run all 71 tests
+pnpm test         # Run all 104 tests
 pnpm build        # Build all packages
 pnpm lint         # Lint
 pnpm clean        # Remove dist directories
@@ -204,13 +256,16 @@ OPENAI_API_KEY=sk-... pnpm demo
 pace/
 ├── packages/
 │   ├── core/src/
-│   │   ├── types/          # All interface definitions (resource, llm, trace, security, termination, memory, tool, action)
+│   │   ├── types/          # All interface definitions
 │   │   ├── registry/       # ResourceRegistry
-│   │   ├── compiler/       # ContextCompiler, TokenEstimator
+│   │   ├── compiler/       # ContextCompiler (with LLM scoring), TokenEstimator
 │   │   ├── budget/         # BudgetScheduler
 │   │   ├── trace/          # JsonlTracer
-│   │   └── runtime/        # PaceRuntime with agentic loop (exported as Pace)
+│   │   └── runtime/        # PaceRuntime (exported as Pace)
 │   ├── llm-openai/         # OpenAI adapter
+│   ├── llm-anthropic/      # Anthropic adapter  (Phase 3)
+│   ├── config-loader/      # pace.config.yaml loader  (Phase 3)
+│   ├── memory-sqlite/      # SQLite memory provider  (Phase 3)
 │   ├── security/           # SecurityController
 │   ├── termination/        # TerminationController
 │   ├── memory-file/        # FileMemoryProvider
@@ -242,15 +297,20 @@ pace/
 - [x] `Message` type extended with `toolCalls` field; OpenAIAdapter handles assistant tool_calls
 - [x] `RunResult` extended with `stopped`, `stopReason`, `toolCallsExecuted`
 
-### v0.3 — Phase 3: Ecosystem
+### v0.3 — Phase 3: Ecosystem ✅
+
+- [x] Anthropic Claude adapter (`@pace-agent/llm-anthropic`)
+- [x] LLM-assisted relevance scoring in ContextCompiler (`scoringLlm`, `scoringMode`, fallback)
+- [x] Config file loading (`@pace-agent/config-loader`) with env-var interpolation
+- [x] SQLite memory provider (`@pace-agent/memory-sqlite`) with FTS5 full-text index
+- [x] `RELEVANCE_SCORING` trace event + `scoring` config section
+
+### v0.4 — Phase 4: Multi-Agent & Observability (planned)
 
 - [ ] Multi-agent orchestration (manager-worker)
 - [ ] MCP tool bridge
-- [ ] LLM-assisted relevance in ContextCompiler
-- [ ] Anthropic adapter
-- [ ] Redis / SQLite memory providers
-- [ ] Config file loading (`pace.config.yaml`)
-- [ ] Basic HTML observability dashboard
+- [ ] HTML observability dashboard
+- [ ] SQLite FTS5 full-text search API
 
 ## License
 

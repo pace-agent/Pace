@@ -1,5 +1,5 @@
 import type { L0Index, L1Preview } from "../types/resource.js";
-import type { Message } from "../types/llm.js";
+import type { Message, LLMAdapter } from "../types/llm.js";
 import type { TraceWriter } from "../types/trace.js";
 import type { ResourceRegistry } from "../registry/ResourceRegistry.js";
 import type { BudgetScheduler } from "../budget/BudgetScheduler.js";
@@ -14,6 +14,14 @@ export interface ContextCompilerOptions {
   stickyTurns?: number;
   l1RelevanceThreshold?: number;
   maxL1Candidates?: number;
+  /** Optional LLM used for relevance scoring (independent of the main task LLM) */
+  scoringLlm?: LLMAdapter;
+  /** "keyword" (default) | "llm" | "auto" */
+  scoringMode?: "keyword" | "llm" | "auto";
+  /** Candidate count threshold for "auto" mode to switch to LLM scoring */
+  llmThresholdCandidates?: number;
+  /** Max tokens for the scoring LLM call */
+  scoringMaxTokens?: number;
 }
 
 const TOKENIZER_PATTERN = /[\s\-_.,!?;:()\[\]{}'"\/\\]+/;
@@ -49,6 +57,10 @@ export class ContextCompiler {
   private readonly tracer: TraceWriter;
   private readonly l1RelevanceThreshold: number;
   private readonly maxL1Candidates: number;
+  private readonly scoringLlm: LLMAdapter | undefined;
+  private readonly scoringMode: "keyword" | "llm" | "auto";
+  private readonly llmThresholdCandidates: number;
+  private readonly scoringMaxTokens: number;
 
   constructor(options: ContextCompilerOptions) {
     this.registry = options.registry;
@@ -57,6 +69,10 @@ export class ContextCompiler {
     this.tracer = options.tracer;
     this.l1RelevanceThreshold = options.l1RelevanceThreshold ?? 0.3;
     this.maxL1Candidates = options.maxL1Candidates ?? 5;
+    this.scoringLlm = options.scoringLlm;
+    this.scoringMode = options.scoringMode ?? "keyword";
+    this.llmThresholdCandidates = options.llmThresholdCandidates ?? 10;
+    this.scoringMaxTokens = options.scoringMaxTokens ?? 256;
   }
 
   async compile(params: {
@@ -83,8 +99,42 @@ export class ContextCompiler {
     // Step 2: Get all L0 resources
     const allL0 = await this.registry.listAllL0();
 
-    // Step 3: Score relevance
-    const scores = allL0.map((r) => this.scoreRelevance(r, userQuery, previouslyLoadedL1));
+    // Step 3: Score relevance (keyword or LLM-assisted)
+    const shouldUseLlm =
+      this.scoringLlm !== undefined &&
+      (this.scoringMode === "llm" ||
+        (this.scoringMode === "auto" && allL0.length >= this.llmThresholdCandidates));
+
+    let scores: RelevanceScore[];
+    let actualMode: "llm" | "keyword" = "keyword";
+    let fallbackUsed = false;
+    const scoringStart = Date.now();
+
+    if (shouldUseLlm) {
+      try {
+        scores = await this.scoreRelevanceLlm(allL0, userQuery, previouslyLoadedL1, turnId, taskId);
+        actualMode = "llm";
+      } catch {
+        scores = allL0.map((r) => this.scoreRelevance(r, userQuery, previouslyLoadedL1));
+        fallbackUsed = true;
+      }
+    } else {
+      scores = allL0.map((r) => this.scoreRelevance(r, userQuery, previouslyLoadedL1));
+    }
+
+    // Emit RELEVANCE_SCORING trace event
+    const selectedCount = scores.filter((s) => s.score >= this.l1RelevanceThreshold).length;
+    this.tracer.write({
+      type: "RELEVANCE_SCORING",
+      timestamp: Date.now(),
+      taskId,
+      turnId,
+      mode: actualMode,
+      candidateCount: allL0.length,
+      selectedCount,
+      latencyMs: Date.now() - scoringStart,
+      ...(fallbackUsed ? { fallbackUsed: true } : {}),
+    });
 
     // Step 4: Select L1 candidates (score >= threshold, top maxL1Candidates)
     const l1Candidates = allL0
@@ -220,6 +270,60 @@ export class ContextCompiler {
     if (isSticky) reasons.push("sticky:prev-turn");
 
     return { resourceId: resource.id, score, reasons };
+  }
+
+  /**
+   * LLM-assisted relevance scoring. Sends all L0 resource metadata to the
+   * scoring LLM and parses back a JSON array of {id, score} pairs.
+   * Sticky bonus is applied after LLM scoring (same 0.4 bonus as keyword mode).
+   */
+  private async scoreRelevanceLlm(
+    resources: L0Index[],
+    userQuery: string,
+    previouslyLoadedL1: Set<string>,
+    _turnId: string,
+    _taskId?: string,
+  ): Promise<RelevanceScore[]> {
+    const resourceList = resources
+      .map((r) => `${r.id}: ${r.name} — ${r.description} [tags: ${r.tags.join(", ")}]`)
+      .join("\n");
+
+    const systemPrompt =
+      'Score each resource 0.0–1.0 for relevance to the query.\nRespond ONLY with JSON: [{"id":"...","score":0.0},...]';
+    const userPrompt = `Query: "${userQuery}"\nResources:\n${resourceList}`;
+
+    const response = await this.scoringLlm!.chat({
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      maxTokens: this.scoringMaxTokens,
+    });
+
+    // Parse JSON response — may throw, triggering fallback
+    const rawText = response.content.trim();
+    // Strip markdown code fences if present
+    const jsonText = rawText.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    const parsed = JSON.parse(jsonText) as Array<{ id: string; score: number }>;
+
+    if (!Array.isArray(parsed) || parsed.length !== resources.length) {
+      throw new Error(
+        `LLM scoring: expected ${resources.length} scores, got ${parsed.length ?? "non-array"}`,
+      );
+    }
+
+    // Build a lookup by id
+    const scoreMap = new Map<string, number>(parsed.map((p) => [p.id, p.score]));
+
+    return resources.map((r) => {
+      const llmScore = scoreMap.get(r.id) ?? 0;
+      const isSticky = previouslyLoadedL1.has(r.id);
+      const stickyBonus = isSticky ? 0.4 : 0;
+      const score = Math.min(1.0, llmScore + stickyBonus);
+      const reasons: string[] = [`llm:${Math.round(llmScore * 100)}%`];
+      if (isSticky) reasons.push("sticky:prev-turn");
+      return { resourceId: r.id, score, reasons };
+    });
   }
 
   private renderL1(resource: L1Preview): string {

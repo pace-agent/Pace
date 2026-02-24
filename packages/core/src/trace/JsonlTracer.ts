@@ -74,6 +74,8 @@ export class JsonlTracer implements TraceWriter {
       case "RESOURCE_LOADED":
         this.metrics.resourcesLoadedByLevel[event.level]++;
         break;
+      case "RELEVANCE_SCORING":
+        break;
     }
   }
 }

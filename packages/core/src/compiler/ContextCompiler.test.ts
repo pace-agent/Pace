@@ -5,6 +5,7 @@ import { TokenEstimator } from "./TokenEstimator.js";
 import { BudgetScheduler } from "../budget/BudgetScheduler.js";
 import type { ResourceProvider, L0Index, L1Preview, L2Payload } from "../types/resource.js";
 import type { TraceWriter, TraceEvent } from "../types/trace.js";
+import type { LLMAdapter, LLMResponse } from "../types/llm.js";
 
 function makeToolProvider(
   tools: Array<{ id: string; name: string; tags: string[]; description?: string }>,
@@ -37,6 +38,17 @@ function makeTracer(): TraceWriter & { events: TraceEvent[] } {
     events,
     write: vi.fn((e: TraceEvent) => events.push(e)),
     flush: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function makeScoringLlm(scores: Array<{ id: string; score: number }>): LLMAdapter {
+  return {
+    chat: vi.fn().mockResolvedValue({
+      content: JSON.stringify(scores),
+      usage: { inputTokens: 80, outputTokens: 40 },
+      finishReason: "stop",
+    } satisfies LLMResponse),
+    estimateTokens: (t: string) => Math.ceil(t.length / 4),
   };
 }
 
@@ -214,5 +226,136 @@ describe("ContextCompiler", () => {
     expect(result.systemPrompt).toContain("[PACE RUNTIME CONTEXT]");
     expect(result.systemPrompt).toContain("Available Resources (Index)");
     expect(result.systemPrompt).toContain("[END PACE CONTEXT]");
+  });
+
+  // ── LLM scoring tests (Phase 3) ───────────────────────────────────────────
+
+  it("LLM scoring: selects the correct resource based on LLM scores", async () => {
+    const tools = [
+      { id: "tool:search", name: "Search", tags: ["search"], description: "Search tool" },
+      { id: "tool:file", name: "File", tags: ["file"], description: "File tool" },
+    ];
+    registry.register(makeToolProvider(tools));
+
+    // LLM says search is highly relevant, file is not
+    const scoringLlm = makeScoringLlm([
+      { id: "tool:search", score: 0.9 },
+      { id: "tool:file", score: 0.1 },
+    ]);
+
+    const llmCompiler = new ContextCompiler({
+      registry,
+      budget,
+      estimator,
+      tracer,
+      scoringLlm,
+      scoringMode: "llm",
+    });
+
+    const result = await llmCompiler.compile({
+      userQuery: "find information",
+      conversationHistory: [],
+      previouslyLoadedL1: new Set(),
+      turnId: "turn-1",
+    });
+
+    const l1Ids = result.blocks.filter((b) => b.level === "L1").map((b) => b.resourceId);
+    expect(l1Ids).toContain("tool:search");
+    expect(l1Ids).not.toContain("tool:file");
+  });
+
+  it("LLM scoring: falls back to keyword when LLM throws", async () => {
+    const tools = [
+      { id: "tool:search", name: "Search", tags: ["search"], description: "Search tool" },
+    ];
+    registry.register(makeToolProvider(tools));
+
+    const failingLlm: LLMAdapter = {
+      chat: vi.fn().mockRejectedValue(new Error("API error")),
+      estimateTokens: (t: string) => Math.ceil(t.length / 4),
+    };
+
+    const llmCompiler = new ContextCompiler({
+      registry,
+      budget,
+      estimator,
+      tracer,
+      scoringLlm: failingLlm,
+      scoringMode: "llm",
+    });
+
+    // Should not throw — falls back to keyword scoring
+    const result = await llmCompiler.compile({
+      userQuery: "search query",
+      conversationHistory: [],
+      previouslyLoadedL1: new Set(),
+      turnId: "turn-1",
+    });
+
+    expect(result.blocks.filter((b) => b.level === "L0")).toHaveLength(1);
+
+    // RELEVANCE_SCORING event should show fallbackUsed=true
+    const scoringEvent = tracer.events.find((e) => e.type === "RELEVANCE_SCORING");
+    expect(scoringEvent).toBeDefined();
+    expect((scoringEvent as { fallbackUsed?: boolean }).fallbackUsed).toBe(true);
+  });
+
+  it("LLM scoring: emits RELEVANCE_SCORING trace event with correct mode", async () => {
+    const tools = [
+      { id: "tool:search", name: "Search", tags: ["search"], description: "Search" },
+    ];
+    registry.register(makeToolProvider(tools));
+
+    const scoringLlm = makeScoringLlm([{ id: "tool:search", score: 0.8 }]);
+    const llmCompiler = new ContextCompiler({
+      registry,
+      budget,
+      estimator,
+      tracer,
+      scoringLlm,
+      scoringMode: "llm",
+    });
+
+    await llmCompiler.compile({
+      userQuery: "search query",
+      conversationHistory: [],
+      previouslyLoadedL1: new Set(),
+      turnId: "turn-1",
+    });
+
+    const scoringEvent = tracer.events.find((e) => e.type === "RELEVANCE_SCORING");
+    expect(scoringEvent).toBeDefined();
+    expect((scoringEvent as { mode: string }).mode).toBe("llm");
+    expect((scoringEvent as { candidateCount: number }).candidateCount).toBe(1);
+  });
+
+  it("LLM scoring: sticky bonus is applied on top of LLM score", async () => {
+    const tools = [
+      { id: "tool:search", name: "Search", tags: ["irrelevant"], description: "Tool" },
+    ];
+    registry.register(makeToolProvider(tools));
+
+    // LLM gives low relevance but resource is sticky
+    const scoringLlm = makeScoringLlm([{ id: "tool:search", score: 0.1 }]);
+    const llmCompiler = new ContextCompiler({
+      registry,
+      budget,
+      estimator,
+      tracer,
+      scoringLlm,
+      scoringMode: "llm",
+      l1RelevanceThreshold: 0.3,
+    });
+
+    // With sticky bonus: 0.1 + 0.4 = 0.5 >= 0.3 threshold → should load L1
+    const result = await llmCompiler.compile({
+      userQuery: "something unrelated",
+      conversationHistory: [],
+      previouslyLoadedL1: new Set(["tool:search"]),
+      turnId: "turn-1",
+    });
+
+    const l1Ids = result.blocks.filter((b) => b.level === "L1").map((b) => b.resourceId);
+    expect(l1Ids).toContain("tool:search");
   });
 });

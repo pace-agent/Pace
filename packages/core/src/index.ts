@@ -29,6 +29,7 @@ export type {
   PolicyDecisionEvent,
   StopTriggeredEvent,
   CheckpointEvent,
+  RelevanceScoringEvent,
   TraceEvent,
   TraceWriter,
 } from "./types/trace.js";
@@ -83,6 +84,7 @@ export { ResourceRegistry } from "./registry/ResourceRegistry.js";
 
 // Compiler
 export { ContextCompiler } from "./compiler/ContextCompiler.js";
+export type { ContextCompilerOptions } from "./compiler/ContextCompiler.js";
 export { TokenEstimator } from "./compiler/TokenEstimator.js";
 export type { ContextBlock, RelevanceScore, CompileResult } from "./compiler/types.js";
 

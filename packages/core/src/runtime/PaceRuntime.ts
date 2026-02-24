@@ -23,6 +23,12 @@ export interface PaceRuntimeOptions {
   securityPolicy?: SecurityPolicy;
   /** Override the termination policy */
   terminationPolicy?: TerminationPolicy;
+  /**
+   * Optional separate LLM for relevance scoring.
+   * When provided, used in conjunction with config.scoring.mode to enable
+   * LLM-assisted context compilation.
+   */
+  scoringLlm?: LLMAdapter;
 }
 
 export interface RunResult {
@@ -186,6 +192,10 @@ export class PaceRuntime {
       budget: this.budget,
       estimator: this.estimator,
       tracer: this.tracer,
+      scoringLlm: options.scoringLlm,
+      scoringMode: this.config.scoring.mode,
+      llmThresholdCandidates: this.config.scoring.llmThresholdCandidates,
+      scoringMaxTokens: this.config.scoring.scoringMaxTokens,
     });
 
     // Security policy: explicit override > config value
