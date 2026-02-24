@@ -2,7 +2,7 @@
 
 > Progressive Agent Computing Engine — AI Agent 的高纪律性运行时框架
 
-Pace 是一个 Node.js/TypeScript Agent 运行时，通过渐进式资源加载（L0/L1/L2 三层协议）大幅降低上下文 token 消耗，同时提供内置预算控制和完整可观测性。
+Pace 是一个 Node.js/TypeScript Agent 运行时，通过渐进式资源加载（L0/L1/L2 三层协议）大幅降低上下文 token 消耗，同时提供内置安全策略、终止控制和完整可观测性。
 
 [English Documentation](./README.md)
 
@@ -53,13 +53,50 @@ Pace 是一个 Node.js/TypeScript Agent 运行时，通过渐进式资源加载�
 - **Sticky 奖励**（权重 0.4）：上一轮已加载的 L1 资源自动获得加分，保持上下文连贯性
 - 阈值（默认 0.3）以上的前 5 个候选资源晋升到 L1
 
+### 安全策略（Phase 2）
+
+`SecurityController` 实现 S0 规则引擎，三档 profile：
+
+| Profile | 自动通过 | 需要审批 | 直接拒绝 |
+|---------|---------|---------|---------|
+| `open` | low + medium | high | critical |
+| `balanced`（默认）| low | medium + high | critical |
+| `strict` | 无 | medium + high | low + critical |
+
+**S0 硬规则**（任何 profile 下均生效）：
+- Shell 命令执行 → 无条件拒绝
+- Global 范围的 delete → 无条件拒绝
+- critical 风险级别 → 无条件拒绝
+- 不可逆的 batch 操作 → 升级为人工审批
+
+### 终止控制（Phase 2）
+
+`TerminationController` 检测四种停止条件：
+
+| 条件 | 触发 | 默认阈值 |
+|------|------|---------|
+| `budget` | token 消耗占预算比例超限 | 95% |
+| `retry` | 连续工具调用失败次数超限 | 3 次 |
+| `stagnation` | LLM 连续输出相同内容 | 3 次 |
+| `risk` | 安全策略连续拒绝次数超限 | 2 次 |
+
+### Agentic 工具执行循环（Phase 2）
+
+当 LLM 返回 `tool_calls` 时，PaceRuntime 自动进入循环：
+
+1. 终止策略检查 → 超限则停止
+2. 安全策略评估 → 不通过则注入拒绝结果
+3. 执行工具 → 写入 `TOOL_INVOKED` trace 事件
+4. 将工具结果注入消息列表
+5. 再次调用 LLM → 重复直到返回 `stop`
+
 ### 预算控制
 
 `BudgetScheduler` 在任务级别和轮次级别双重追踪 token 消耗，防止超出预算。
 
 ### 全链路可观测
 
-每次资源加载、LLM 调用都会发出结构化 `TraceEvent`，包含 token 数量和延迟，写入 `.pace/traces/*.jsonl`。
+每次资源加载、LLM 调用、工具执行、策略决策都会发出结构化 `TraceEvent`，写入 `.pace/traces/*.jsonl`。
 
 ---
 
@@ -78,6 +115,8 @@ const agent = new Pace({
   resources: [myToolProvider, myMemoryProvider],
   config: {
     budget: { maxTokensPerTask: 20_000, maxTokensPerTurn: 4_000 },
+    security: "balanced",          // "open" | "balanced" | "strict"
+    termination: { maxRetries: 3, maxStagnation: 3, maxSecurityDenials: 2 },
   },
 });
 
@@ -86,47 +125,83 @@ console.log(result.reply);
 console.log(result.tokenUsage);
 // { inputTokens: 312, outputTokens: 85, contextTokens: 282, totalTokens: 397 }
 
-console.log(result.trace);
-// TraceEvent[]：每个 RESOURCE_LOADED、LLM_CALL_START/END 事件
+console.log(result.toolCallsExecuted); // 执行的工具调用次数
+console.log(result.stopped);           // 是否被终止策略提前停止
+console.log(result.trace);             // TraceEvent[]
 ```
 
 ---
 
-## 实现一个 ResourceProvider
+## 实现一个 ToolProvider
 
 ```typescript
-import type { ResourceProvider, L0Index, L1Preview, L2Payload } from "@pace-agent/core";
+import type { ResourceProvider, ToolProvider, ToolDefinition, ToolResult } from "@pace-agent/core";
 
-class MyToolProvider implements ResourceProvider {
-  readonly type = "tool" as const;  // "tool" | "memory" | "skill" | "document"
+class MyToolProvider implements ResourceProvider, ToolProvider {
+  readonly type = "tool" as const;
 
   // L0：始终注入，极轻量
-  async listL0(): Promise<L0Index[]> {
-    return [{
-      id: "tool:web_search",         // 格式：<type>:<slug>
-      name: "Web Search",
-      description: "Search the web for current information",
-      type: "tool",
-      tags: ["search", "web"],
-      riskLevel: "low",
-    }];
+  async listL0() {
+    return [{ id: "tool:web_search", name: "Web Search",
+              description: "Search the web", type: "tool", tags: ["search"], riskLevel: "low" }];
   }
 
-  // L1：相关时加载，包含摘要和参数说明
-  async getL1(id: string): Promise<L1Preview> {
-    return {
-      id, name: "Web Search", description: "...", type: "tool", tags: ["search", "web"],
-      summary: "通过搜索引擎 API 搜索互联网，返回标题、摘要和 URL。",
-      parameterSummary: "query (string, 必填), maxResults (number, 默认 10)",
-      example: '{ "query": "TypeScript 5.4 release", "maxResults": 5 }',
-    };
+  async getL1(id: string) { /* L1 preview */ }
+  async getL2(id: string) { /* L2 full schema */ }
+
+  // ToolProvider 接口
+  async listTools(): Promise<ToolDefinition[]> {
+    return [{ name: "web_search", description: "Search the web",
+              tags: ["search"], risk: "low", preview: "...",
+              parameters: { type: "object", properties: { query: { type: "string" } } },
+              execute: async ({ query }) => searchApi(query) }];
   }
 
-  // L2：执行时加载，包含完整 Schema
-  async getL2(id: string): Promise<L2Payload> {
-    return { ...await this.getL1(id), fullContent: "<完整 JSON Schema>" };
+  async getTool(name: string) {
+    return (await this.listTools()).find(t => t.name === name);
+  }
+
+  async executeTool(name: string, params: unknown): Promise<ToolResult> {
+    const tool = await this.getTool(name);
+    if (!tool) return { success: false, error: "Unknown tool", latencyMs: 0 };
+    const start = Date.now();
+    const output = await tool.execute(params as any);
+    return { success: true, output, latencyMs: Date.now() - start };
   }
 }
+```
+
+---
+
+## 使用 SecurityController
+
+```typescript
+import { SecurityController } from "@pace-agent/security";
+
+const agent = new Pace({
+  llm,
+  resources: [myToolProvider],
+  securityPolicy: new SecurityController({ profile: "strict" }),
+});
+```
+
+---
+
+## 使用 FileMemoryProvider
+
+```typescript
+import { FileMemoryProvider } from "@pace-agent/memory-file";
+
+const memory = new FileMemoryProvider(".pace/memory");
+await memory.init();   // 创建目录结构
+
+const agent = new Pace({ llm, resources: [memory] });
+
+// 写入记忆
+const id = await memory.write(
+  { name: "项目背景", description: "当前项目信息", priority: "P0", tags: ["project"] },
+  "我们正在开发一个名为 Pace 的 TypeScript Agent 运行时。"
+);
 ```
 
 ---
@@ -135,12 +210,12 @@ class MyToolProvider implements ResourceProvider {
 
 | 包 | 状态 | 说明 |
 |----|------|------|
-| `@pace-agent/core` | ✅ Phase 1 已完成 | 核心运行时：ResourceRegistry、ContextCompiler、BudgetScheduler、JsonlTracer、PaceRuntime |
-| `@pace-agent/llm-openai` | ✅ Phase 1 已完成 | OpenAI 兼容 LLM 适配器 |
+| `@pace-agent/core` | ✅ Phase 2 已完成 | 核心运行时：ResourceRegistry、ContextCompiler、BudgetScheduler、JsonlTracer、PaceRuntime（含工具执行循环） |
+| `@pace-agent/llm-openai` | ✅ Phase 2 已完成 | OpenAI 兼容 LLM 适配器，支持 tool_calls |
+| `@pace-agent/security` | ✅ Phase 2 已完成 | SecurityController：S0 规则引擎 + open/balanced/strict 三档 profile |
+| `@pace-agent/termination` | ✅ Phase 2 已完成 | TerminationController：budget/retry/stagnation/risk 四种停止条件 + buildFailureReport() |
+| `@pace-agent/memory-file` | ✅ Phase 2 已完成 | 基于文件系统的记忆 Provider，支持 p0/p1/p2 优先级分层和 TTL 过期 |
 | `@pace-agent/cli` | ✅ Phase 1 已完成 | CLI 演示（含 token 节省对比） |
-| `@pace-agent/security` | 🔜 Phase 2 | 安全控制器 + 内置策略（open/balanced/strict） |
-| `@pace-agent/termination` | 🔜 Phase 2 | 终止控制器（BudgetStop、RetryStop、StagnationStop） |
-| `@pace-agent/memory-file` | 🔜 Phase 2 | 基于文件系统的记忆 Provider |
 
 ---
 
@@ -162,7 +237,7 @@ pnpm install
 ### 常用命令
 
 ```bash
-pnpm test         # 运行全部 37 个测试
+pnpm test         # 运行全部 71 个测试
 pnpm build        # 构建所有包
 pnpm lint         # 代码检查
 pnpm clean        # 清除 dist 目录
@@ -172,30 +247,28 @@ pnpm clean        # 清除 dist 目录
 
 ```bash
 # 无需 API Key（使用 MockLLMAdapter，不产生任何费用）
-node packages/cli/src/index.ts
+pnpm demo
 
 # 使用真实 OpenAI API
-OPENAI_API_KEY=sk-... node packages/cli/src/index.ts
+OPENAI_API_KEY=sk-... pnpm demo
 ```
 
 ---
 
-## Phase 1 完成内容与验证
+## Phase 2 完成内容与验证
 
 ### 已完成能力
 
 | 模块 | 能力 |
 |------|------|
-| **ResourceRegistry** | 聚合多个 ResourceProvider；L0 结果缓存（注册新 Provider 时自动失效）；按资源 ID 前缀路由 L1/L2 请求 |
-| **ContextCompiler** | 关键词相关性评分；Sticky 轮次奖励；L0 始终全量注入；按预算贪心裁剪 L1；组装标准化 system prompt |
-| **BudgetScheduler** | 任务级和轮次级 token 追踪；`allocateTurnBudget()` 保留回复空间；`resetTurn()` 不影响任务总量 |
-| **JsonlTracer** | 同步缓冲写入；异步 flush 到 JSONL 文件；自动创建目录；追加写入（多轮不覆盖）；metrics 统计 |
-| **PaceRuntime (Pace)** | 多轮对话历史累积；每轮 system prompt 动态编译；Sticky L1 跨轮传递；trace 事件完整记录 |
-| **OpenAIAdapter** | 适配 openai SDK；角色映射；finishReason 映射；tool_calls 支持（Phase 2 执行） |
+| **SecurityController** | S0 硬规则（shell exec / global delete / critical 无条件拒绝，不可逆 batch 升级审批）；open/balanced/strict 三档 profile；`evaluate()` 返回 `SecurityDecision`（allow/deny/approve） |
+| **TerminationController** | 无状态 `shouldStop()` 检查 budget/retry/stagnation/risk；`buildFailureReport()` 生成结构化停止报告（trigger、summary、nextOptions）；所有阈值可在构造时配置 |
+| **FileMemoryProvider** | `.index.json` 存储全部元数据；`p0/p1/p2` 子目录存储内容；TTL 过期自动过滤；同时实现 `ResourceProvider`（供 ContextCompiler 使用）和 `MemoryProvider`（供应用层操作） |
+| **PaceRuntime 工具循环** | `finishReason=tool_calls` 时进入循环；每次工具调用前安全检查；执行结果注入为 `tool` 消息；终止策略在循环前后双重检查；`RunResult` 新增 `stopped`、`stopReason`、`toolCallsExecuted` 字段 |
 
 ### 验证方式
 
-#### 1. 单元测试（最快，无需外部依赖）
+#### 1. 单元测试
 
 ```bash
 pnpm test
@@ -207,64 +280,99 @@ pnpm test
  ✓ packages/core/src/budget/BudgetScheduler.test.ts        (7 tests)
  ✓ packages/core/src/trace/JsonlTracer.test.ts             (5 tests)
  ✓ packages/core/src/compiler/ContextCompiler.test.ts      (7 tests)
- ✓ packages/core/src/runtime/PaceRuntime.test.ts           (7 tests)
+ ✓ packages/core/src/runtime/PaceRuntime.test.ts           (10 tests)
  ✓ packages/llm-openai/src/OpenAIAdapter.test.ts           (5 tests)
+ ✓ packages/security/src/SecurityController.test.ts        (12 tests)
+ ✓ packages/termination/src/TerminationController.test.ts  (8 tests)
+ ✓ packages/memory-file/src/FileMemoryProvider.test.ts     (11 tests)
 
- Tests  37 passed (37)
+ Tests  71 passed (71)
 ```
 
-#### 2. CLI Demo（无需 API Key）
-
-```bash
-node packages/cli/src/index.ts
-```
-
-观察：
-- **Turn 1**（"What is the weather today?"）：仅加载 L0，上下文 token 极少
-- **Turn 2**（"Search the web..."）：`tool:web_search` 晋升到 L1，可见 L1 资源列表
-- 最终打印 token 节省对比表
-
-#### 3. 验证渐进式加载效果
-
-在代码中直接验证：
+#### 2. 验证终止策略
 
 ```typescript
-import { Pace, ResourceRegistry, ContextCompiler, TokenEstimator, BudgetScheduler } from "@pace-agent/core";
+import { TerminationController } from "@pace-agent/termination";
 
-const registry = new ResourceRegistry();
-registry.register(myProvider);
+const ctrl = new TerminationController({ maxRetries: 3, budgetThreshold: 0.9 });
 
-const estimator = new TokenEstimator();
-const budget = new BudgetScheduler({ maxTokensPerTask: 20_000, maxTokensPerTurn: 4_000, estimator });
-const events: any[] = [];
-const tracer = { write: (e: any) => events.push(e), flush: async () => {} };
+// 正常情况：返回 null
+ctrl.shouldStop({ totalTokens: 5000, budgetTokens: 10000,
+                  consecutiveErrors: 0, consecutiveStagnations: 0, securityDenials: 0 });
+// → null
 
-const compiler = new ContextCompiler({ registry, budget, estimator, tracer });
+// 超出预算：返回 "budget"
+ctrl.shouldStop({ totalTokens: 9500, budgetTokens: 10000,
+                  consecutiveErrors: 0, consecutiveStagnations: 0, securityDenials: 0 });
+// → "budget"
 
-// Turn 1：无关 query
-const r1 = await compiler.compile({ userQuery: "hello", conversationHistory: [], previouslyLoadedL1: new Set(), turnId: "t1" });
-console.log("L0 tokens:", r1.tokenUsage.l0Tokens);   // ~200
-console.log("L1 tokens:", r1.tokenUsage.l1Tokens);   // 0（无相关资源）
-
-// Turn 2：相关 query + sticky
-const r2 = await compiler.compile({ userQuery: "search the web", conversationHistory: [], previouslyLoadedL1: new Set(["tool:web_search"]), turnId: "t2" });
-console.log("L1 tokens:", r2.tokenUsage.l1Tokens);   // >0（web_search 晋升）
+// 生成失败报告
+const report = ctrl.buildFailureReport({
+  reason: "budget",
+  task: "分析代码仓库",
+  completedSteps: ["读取文件列表", "分析 core 包"],
+  stuckAt: "加载 llm-openai 包",
+  tokenUsage: { total: 19000, budget: 20000 },
+});
+console.log(report.trigger);      // "Token usage reached 95% of budget"
+console.log(report.nextOptions);  // ["Increase maxTokensPerTask ...", ...]
 ```
 
-#### 4. 验证 JSONL Trace 输出
+#### 3. 验证安全策略
 
-运行任何 `Pace.run()` 后，检查 `.pace/traces/` 目录：
+```typescript
+import { SecurityController } from "@pace-agent/security";
 
-```bash
-cat .pace/traces/task-*.jsonl | head -20
+const ctrl = new SecurityController({ profile: "balanced" });
+
+// Shell exec 无条件拒绝
+await ctrl.evaluate({ domain: "shell", operation: "exec", target: "rm -rf /",
+                      impact: { scope: "global" }, reversible: false, riskLevel: "critical" });
+// → { allowed: false, action: "deny", reason: "S0: Shell exec denied" }
+
+// low risk 自动通过
+await ctrl.evaluate({ domain: "fs", operation: "read", target: "/tmp/file.txt",
+                      impact: { scope: "single" }, reversible: true, riskLevel: "low" });
+// → { allowed: true, action: "allow" }
 ```
 
-每行一个 JSON 事件：
-```json
-{"type":"RESOURCE_LOADED","timestamp":1708700259000,"resourceId":"tool:web_search","level":"L0","tokens":45}
-{"type":"RESOURCE_LOADED","timestamp":1708700259001,"resourceId":"tool:web_search","level":"L1","tokens":120}
-{"type":"LLM_CALL_START","timestamp":1708700259002,"tokens":{"context":312,"budget":3200}}
-{"type":"LLM_CALL_END","timestamp":1708700260500,"tokens":{"input":312,"output":85},"latencyMs":1498}
+#### 4. 验证工具执行循环
+
+```typescript
+// RunResult 现在包含工具执行信息
+const result = await agent.run("搜索 TypeScript 5.4 的新特性");
+console.log(result.toolCallsExecuted); // 实际执行的工具调用次数
+console.log(result.stopped);           // false（正常完成）或 true（被终止策略停止）
+console.log(result.stopReason);        // 如果 stopped=true："budget" | "retry" | "stagnation" | "risk"
+
+// Trace 中可以看到工具调用事件
+const toolEvents = result.trace.filter(e => e.type === "TOOL_INVOKED");
+const policyEvents = result.trace.filter(e => e.type === "POLICY_DECISION");
+```
+
+#### 5. 验证文件记忆
+
+```typescript
+import { FileMemoryProvider } from "@pace-agent/memory-file";
+
+const memory = new FileMemoryProvider(".pace/memory");
+await memory.init();
+
+// 写入
+const id = await memory.write(
+  { name: "用户偏好", description: "用户设置", priority: "P0", tags: ["prefs"], ttlDays: 30 },
+  "用户偏好使用 TypeScript，喜欢简洁代码风格。"
+);
+
+// 读取（L0 索引）
+const entries = await memory.list();
+// → [{ id, name: "用户偏好", priority: "P0", ... }]
+
+// 读取摘要（L1）
+const summary = await memory.getSummary(id);
+
+// 接入 Pace（ContextCompiler 会将其纳入相关性评分）
+const agent = new Pace({ llm, resources: [memory] });
 ```
 
 ---
@@ -282,19 +390,21 @@ cat .pace/traces/task-*.jsonl | head -20
 - [x] OpenAI 兼容适配器
 - [x] CLI Demo + token 节省对比
 
-### v0.2 — Phase 2：安全与终止 🔜
+### v0.2 — Phase 2：安全与终止 ✅
 
-- [ ] SecurityController（S0 规则引擎：风险级别自动评估）
-- [ ] TerminationController（BudgetStop、RetryStop、StagnationStop）
-- [ ] 工具执行循环（处理 `finishReason === "tool_calls"`）
-- [ ] FileMemoryProvider
-- [ ] Anthropic 适配器
+- [x] SecurityController：S0 规则引擎 + open/balanced/strict 三档 profile
+- [x] TerminationController：budget/retry/stagnation/risk 四种停止条件 + buildFailureReport()
+- [x] Agentic 工具执行循环：安全检查 → 执行 → 注入结果 → 再次调用 LLM
+- [x] FileMemoryProvider：文件系统记忆，p0/p1/p2 优先级分层，TTL 过期过滤
+- [x] Message 类型扩展 toolCalls 字段；OpenAIAdapter 支持 assistant tool_calls 序列化
+- [x] RunResult 新增 stopped、stopReason、toolCallsExecuted 字段
 
 ### v0.3 — Phase 3：生态扩展
 
 - [ ] 多 Agent 编排（manager-worker 模式）
 - [ ] MCP 工具桥
 - [ ] LLM 辅助相关性评分
+- [ ] Anthropic 适配器
 - [ ] Redis / SQLite 记忆 Provider
 - [ ] `pace.config.yaml` 配置文件加载
 - [ ] HTML 可观测性 Dashboard

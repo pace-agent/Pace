@@ -2,7 +2,7 @@
 
 > Progressive Agent Computing Engine — a disciplined runtime for AI agents.
 
-Pace is a Node.js/TypeScript agent runtime framework that dramatically reduces context token consumption through progressive resource loading (L0/L1/L2), while providing built-in budget control and full observability.
+Pace is a Node.js/TypeScript agent runtime framework that dramatically reduces context token consumption through progressive resource loading (L0/L1/L2), while providing built-in budget control, security policy enforcement, and full observability.
 
 [中文文档](./README.zh.md)
 
@@ -37,7 +37,13 @@ Pace is a Node.js/TypeScript agent runtime framework that dramatically reduces c
 
 **Budget Control** — BudgetScheduler tracks token usage across both the full task and each individual turn, ensuring the runtime stays within configurable limits.
 
-**Full Observability** — Every resource load and LLM call emits a structured JSONL trace event with token counts and latency, written to `.pace/traces/`.
+**Security Policy** — SecurityController enforces S0 hard rules (shell exec, global delete, critical risk are unconditionally denied) plus three risk-tiered profiles: `open`, `balanced` (default), `strict`. Custom `SecurityPolicy` implementations are fully supported.
+
+**Termination Control** — TerminationController detects four stop conditions: budget exhaustion, consecutive tool errors, stagnant output, and repeated security denials. All stop decisions are recorded as `STOP_TRIGGERED` trace events.
+
+**Agentic Tool Loop** — When the LLM returns `tool_calls`, Pace automatically executes the tools (with security checks), injects results, and calls the LLM again — repeating until the model produces a final reply or a termination condition is triggered.
+
+**Full Observability** — Every resource load, LLM call, tool invocation, and policy decision emits a structured JSONL trace event with token counts and latency, written to `.pace/traces/`.
 
 ## Quick Start
 
@@ -48,58 +54,114 @@ pnpm install
 ```typescript
 import { Pace } from "@pace-agent/core";
 import { OpenAIAdapter } from "@pace-agent/llm-openai";
+import { SecurityController } from "@pace-agent/security";
+import { TerminationController } from "@pace-agent/termination";
 
 const agent = new Pace({
   llm: new OpenAIAdapter({ model: "gpt-4o" }),
   resources: [myToolProvider, myMemoryProvider],
   config: {
     budget: { maxTokensPerTask: 20_000, maxTokensPerTurn: 4_000 },
+    security: "balanced",          // "open" | "balanced" | "strict"
+    termination: { maxRetries: 3, maxStagnation: 3, maxSecurityDenials: 2 },
   },
 });
 
 const result = await agent.run("Search the web for the latest TypeScript release");
 console.log(result.reply);
-console.log(result.tokenUsage);  // { inputTokens, outputTokens, contextTokens, totalTokens }
-console.log(result.trace);       // TraceEvent[] — resource loads, LLM calls
+console.log(result.tokenUsage);        // { inputTokens, outputTokens, contextTokens, totalTokens }
+console.log(result.toolCallsExecuted); // number of tool calls executed
+console.log(result.stopped);           // true if terminated by policy
+console.log(result.trace);             // TraceEvent[] — resource loads, LLM calls, tool invocations
 ```
 
 ## Packages
 
 | Package | Status | Description |
 |---------|--------|-------------|
-| `@pace-agent/core` | ✅ Phase 1 | Core runtime: ResourceRegistry, ContextCompiler, BudgetScheduler, JsonlTracer, PaceRuntime |
-| `@pace-agent/llm-openai` | ✅ Phase 1 | OpenAI-compatible LLM adapter |
+| `@pace-agent/core` | ✅ Phase 2 | Core runtime: ResourceRegistry, ContextCompiler, BudgetScheduler, JsonlTracer, PaceRuntime (with agentic loop) |
+| `@pace-agent/llm-openai` | ✅ Phase 2 | OpenAI-compatible LLM adapter with tool_calls support |
+| `@pace-agent/security` | ✅ Phase 2 | SecurityController with S0 rule engine and open/balanced/strict profiles |
+| `@pace-agent/termination` | ✅ Phase 2 | TerminationController with budget/retry/stagnation/risk stop conditions |
+| `@pace-agent/memory-file` | ✅ Phase 2 | File-system MemoryProvider with p0/p1/p2 priority tiers and TTL expiry |
 | `@pace-agent/cli` | ✅ Phase 1 | CLI demo with token savings comparison |
-| `@pace-agent/security` | 🔜 Phase 2 | SecurityController + built-in policies |
-| `@pace-agent/termination` | 🔜 Phase 2 | TerminationController (BudgetStop, RetryStop, StagnationStop) |
-| `@pace-agent/memory-file` | 🔜 Phase 2 | File-system MemoryProvider with L0/L1/L2 support |
 
-## Implementing a ResourceProvider
+## Implementing a ToolProvider
 
 ```typescript
-import type { ResourceProvider, L0Index, L1Preview, L2Payload } from "@pace-agent/core";
+import type { ResourceProvider, ToolProvider, ToolDefinition, ToolResult } from "@pace-agent/core";
 
-class MyToolProvider implements ResourceProvider {
+class MyToolProvider implements ResourceProvider, ToolProvider {
   readonly type = "tool" as const;
 
-  async listL0(): Promise<L0Index[]> {
-    return [{ id: "tool:my_tool", name: "My Tool", description: "...", type: "tool", tags: ["example"], riskLevel: "low" }];
+  async listL0() {
+    return [{ id: "tool:web_search", name: "Web Search", description: "Search the web",
+              type: "tool", tags: ["search"], riskLevel: "low" }];
   }
 
-  async getL1(id: string): Promise<L1Preview> {
-    return { id, name: "My Tool", description: "...", type: "tool", tags: ["example"],
-      summary: "Does X by doing Y.", parameterSummary: "input (string, required)" };
+  async getL1(id: string) {
+    return { id, name: "Web Search", type: "tool", tags: ["search"],
+             description: "Search the web", summary: "Returns titles and URLs.",
+             parameterSummary: "query (string, required)" };
   }
 
-  async getL2(id: string): Promise<L2Payload> {
+  async getL2(id: string) {
     return { ...await this.getL1(id), fullContent: "<full JSON schema>" };
   }
+
+  async listTools(): Promise<ToolDefinition[]> {
+    return [{ name: "web_search", description: "Search the web", tags: ["search"],
+              risk: "low", preview: "Search the internet", parameters: { type: "object" },
+              execute: async (p) => search(p) }];
+  }
+
+  async getTool(name: string): Promise<ToolDefinition | undefined> {
+    return (await this.listTools()).find(t => t.name === name);
+  }
+
+  async executeTool(name: string, params: unknown): Promise<ToolResult> {
+    const tool = await this.getTool(name);
+    if (!tool) return { success: false, error: "Unknown tool", latencyMs: 0 };
+    const start = Date.now();
+    const output = await tool.execute(params);
+    return { success: true, output, latencyMs: Date.now() - start };
+  }
 }
+```
+
+## Using SecurityController
+
+```typescript
+import { SecurityController } from "@pace-agent/security";
 
 const agent = new Pace({
-  llm: new OpenAIAdapter({ model: "gpt-4o" }),
-  resources: [new MyToolProvider()],
+  llm,
+  resources: [myToolProvider],
+  securityPolicy: new SecurityController({ profile: "balanced" }),
 });
+```
+
+S0 hard rules (applied regardless of profile):
+- Shell command execution → always denied
+- Global-scope delete → always denied
+- Critical risk level → always denied
+- Irreversible batch operations → escalated to human approval
+
+## Using FileMemoryProvider
+
+```typescript
+import { FileMemoryProvider } from "@pace-agent/memory-file";
+
+const memory = new FileMemoryProvider(".pace/memory");
+await memory.init();
+
+const agent = new Pace({ llm, resources: [memory] });
+
+// Write a memory entry
+await memory.write(
+  { name: "Project Context", description: "Current project", priority: "P0", tags: ["project"] },
+  "We are building a TypeScript agent runtime called Pace."
+);
 ```
 
 ## Development
@@ -120,7 +182,7 @@ pnpm install
 ### Commands
 
 ```bash
-pnpm test         # Run all 37 tests
+pnpm test         # Run all 71 tests
 pnpm build        # Build all packages
 pnpm lint         # Lint
 pnpm clean        # Remove dist directories
@@ -130,10 +192,10 @@ pnpm clean        # Remove dist directories
 
 ```bash
 # No API key required — uses MockLLMAdapter
-node packages/cli/src/index.ts
+pnpm demo
 
 # With real LLM
-OPENAI_API_KEY=sk-... node packages/cli/src/index.ts
+OPENAI_API_KEY=sk-... pnpm demo
 ```
 
 ### Project Structure
@@ -142,15 +204,17 @@ OPENAI_API_KEY=sk-... node packages/cli/src/index.ts
 pace/
 ├── packages/
 │   ├── core/src/
-│   │   ├── types/          # Phase 0: all interface definitions
+│   │   ├── types/          # All interface definitions (resource, llm, trace, security, termination, memory, tool, action)
 │   │   ├── registry/       # ResourceRegistry
-│   │   ├── compiler/       # ContextCompiler, TokenEstimator, types
+│   │   ├── compiler/       # ContextCompiler, TokenEstimator
 │   │   ├── budget/         # BudgetScheduler
 │   │   ├── trace/          # JsonlTracer
-│   │   └── runtime/        # PaceRuntime (exported as Pace)
+│   │   └── runtime/        # PaceRuntime with agentic loop (exported as Pace)
 │   ├── llm-openai/         # OpenAI adapter
+│   ├── security/           # SecurityController
+│   ├── termination/        # TerminationController
+│   ├── memory-file/        # FileMemoryProvider
 │   └── cli/                # Demo entry + mock resources
-├── docs/
 ├── package.json
 ├── tsconfig.base.json
 └── vitest.config.ts
@@ -169,19 +233,21 @@ pace/
 - [x] OpenAI-compatible LLM adapter
 - [x] CLI demo with token savings comparison
 
-### v0.2 — Phase 2: Safety & Termination 🔜
+### v0.2 — Phase 2: Safety & Termination ✅
 
-- [ ] SecurityController (S0 rule engine: risk level evaluation)
-- [ ] TerminationController (BudgetStop, RetryStop, StagnationStop)
-- [ ] Tool execution loop (handle `finishReason === "tool_calls"`)
-- [ ] FileMemoryProvider
-- [ ] Anthropic adapter
+- [x] SecurityController: S0 rule engine with open/balanced/strict profiles
+- [x] TerminationController: budget/retry/stagnation/risk stop conditions with `buildFailureReport()`
+- [x] Agentic tool execution loop: security check → execute → inject result → re-prompt
+- [x] FileMemoryProvider: file-system memory with p0/p1/p2 priority tiers and TTL expiry
+- [x] `Message` type extended with `toolCalls` field; OpenAIAdapter handles assistant tool_calls
+- [x] `RunResult` extended with `stopped`, `stopReason`, `toolCallsExecuted`
 
 ### v0.3 — Phase 3: Ecosystem
 
 - [ ] Multi-agent orchestration (manager-worker)
 - [ ] MCP tool bridge
 - [ ] LLM-assisted relevance in ContextCompiler
+- [ ] Anthropic adapter
 - [ ] Redis / SQLite memory providers
 - [ ] Config file loading (`pace.config.yaml`)
 - [ ] Basic HTML observability dashboard
