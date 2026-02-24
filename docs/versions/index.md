@@ -1,126 +1,120 @@
 # Pace 版本迭代计划
 
-> 本目录记录每次版本迭代前的设计文档和规划。
+本文档规划 Pace 框架的版本迭代路线图。
 
-## 版本路线图
+---
 
-### v0.1 — 渐进式加载核心 (MVP) ✅
+## 版本概览
 
-**状态**：已完成
+| 版本 | 主题 | 状态 | 目标 |
+|------|------|------|------|
+| v0.1 | 渐进式加载核心 | ✅ 完成 | 验证 L0/L1/L2 能显著降低 token 消耗 |
+| v0.2 | 外部验证 + 基础沙箱 | 🔜 计划中 | 解决 LLM 自评估不可靠问题 + 文件隔离 |
+| v0.3 | 完整沙箱 + Context Rotation | 📋 规划中 | OS 级隔离 + 上下文轮换 |
+| v0.4 | 多 Agent 编排 | 📋 规划中 | manager-worker 模式 + shared-memory |
 
-**核心目标**：验证渐进式加载能显著降低 Agent 的上下文 token 消耗
+---
 
-**包含功能**：
+## v0.1 — 渐进式加载核心（已完成）
+
+**核心价值**：验证渐进式加载能显著降低 Agent 的上下文 token 消耗。
+
+**已实现**：
 - ResourceRegistry + ContextCompiler（规则版相关性判断）
 - FunctionToolProvider + FileMemoryProvider
-- SecurityController（S0 规则拦截）
-- TerminationController（BudgetStop + RetryStop）
-- OpenAI/Anthropic Adapter
-- Tracer（JSONL 输出）
+- SecurityController（S0 规则） + TerminationController（Budget + Retry）
+- OpenAI Adapter + Anthropic Adapter + SQLite MemoryProvider
+- LLM 辅助相关性评分
 
 ---
 
-### v0.2 — 外部验证 + 基础沙箱
+## v0.2 — 外部验证 + 基础沙箱
 
-**状态**：规划中
+**核心价值**：
+1. 解决 LLM 自评估不可靠问题（引入外部验证机制）
+2. 实现文件级隔离（工作区模式）
 
-**核心目标**：引入外部验证机制，让 Agent 任务完成更可靠；实现基础沙箱隔离
+**设计文档**：[v0.2-design.md](./v0.2-design.md)
 
-**包含功能**：
+### 功能模块
 
-| 功能 | 优先级 | 描述 |
+| 模块 | 优先级 | 说明 |
 |------|--------|------|
-| **外部验证机制** | P0 | `verifyCompletion` API，解决 LLM 自评估不可靠问题 |
-| **Compaction 结构化摘要** | P0 | 借鉴 pi-mono，生成 Goal/Progress/Decisions 摘要 |
-| **Guardrails 学习系统** | P1 | 从失败中积累规则，跨会话持久化 |
-| **基础沙箱（文件级）** | P1 | 工作区隔离：cp → 修改 → diff → 合并 |
-| **网络隔离（allow-list）** | P2 | 限制 Agent 可访问的域名 |
-| **Extension 系统（基础）** | P2 | 事件订阅 + tool_call 拦截 |
+| **TaskCompletion** | P0 | 外部可验证的完成标准 |
+| **SandboxManager** | P0 | 工作区隔离（文件级） |
+| **MergeManager** | P1 | diff 生成 + 审批流 |
+| **Guardrails** | P1 | 从失败中学习规则 |
 
-**设计文档**：[v0.2/README.md](./v0.2/README.md)
+### 关键决策
 
----
-
-### v0.3 — 完整沙箱 + Context Rotation
-
-**状态**：规划中
-
-**核心目标**：实现完整的沙箱隔离和上下文轮换机制
-
-**包含功能**：
-
-| 功能 | 优先级 | 描述 |
-|------|--------|------|
-| **OS 级沙箱** | P0 | Linux bubblewrap / macOS Seatbelt |
-| **Secret Injection** | P0 | 按需注入凭证，避免暴露全部 |
-| **Context Rotation** | P0 | 上下文轮换策略，状态持久化到文件系统 |
-| **Git Worktree 集成** | P1 | 为 Agent 创建隔离的 git worktree |
-| **LLM 辅助相关性判断** | P1 | 用轻量 LLM 判断 L1 加载，失败回退规则版 |
-| **HTML Dashboard** | P2 | 可视化 token 消耗、资源加载瀑布图 |
-
-**设计文档**：v0.3/（待创建）
+1. **沙箱粒度**：v0.2 使用文件级（cp → 修改 → 合并）
+2. **网络隔离**：v0.2 使用 allow-list 模式
+3. **合并机制**：自动 diff + CLI 审批交互
 
 ---
 
-### v0.4 — 多 Agent 编排
+## v0.3 — 完整沙箱 + Context Rotation
 
-**状态**：规划中
+**核心价值**：
+1. OS 级安全隔离
+2. 上下文轮换避免 Context Rot
 
-**核心目标**：支持多 Agent 协作和 MCP 工具桥接
+### 功能模块
 
-**包含功能**：
-
-| 功能 | 优先级 | 描述 |
-|------|--------|------|
-| **多 Agent 编排** | P0 | manager-worker 模式 |
-| **shared-memory** | P0 | 跨 Agent 共享事实层 |
-| **MCP 工具桥接** | P1 | MCPToolProvider |
-| **框架集成** | P2 | LangChain / LlamaIndex / Vercel AI SDK 封装 |
-
-**设计文档**：v0.4/（待创建）
+| 模块 | 说明 |
+|------|------|
+| **OS Isolation** | bubblewrap（Linux）/ seatbelt（macOS） |
+| **Network Proxy** | Unix socket + domain allow-list |
+| **Context Rotation** | 上下文轮换策略 |
+| **Secret Injection** | 按需注入凭证 |
+| **Git Worktree 集成** | 多 agent 并行工作 |
 
 ---
 
-## 版本迭代流程
+## v0.4 — 多 Agent 编排
 
-每次版本迭代遵循以下流程：
+**核心价值**：支持 manager-worker 模式的多 Agent 协作。
+
+### 功能模块
+
+| 模块 | 说明 |
+|------|------|
+| **Agent Orchestrator** | 多 agent 编排器 |
+| **Shared Memory** | 跨 agent 共享事实层 |
+| **MCP Tool Bridge** | MCP 工具桥接 |
+| **Framework Integration** | LangChain / Vercel AI SDK 封装 |
+
+---
+
+## 迭代原则
+
+1. **慢就是快** — 认真做好每一次设计，不急于求成
+2. **验证驱动** — 每个版本必须有明确的验证目标
+3. **渐进增强** — 在稳定基础上逐步添加功能
+4. **向后兼容** — 不破坏已有 API
+
+---
+
+## 文档规范
+
+每个版本的迭代文档包含：
 
 ```
-1. 设计阶段
-   ├── 创建 docs/versions/v{version}/ 目录
-   ├── 编写 README.md（设计文档）
-   ├── 编写 API.md（接口设计）
-   └── 编写 IMPL.md（实现计划）
-
-2. 实现阶段
-   ├── 创建 feature 分支
-   ├── 按 IMPL.md 逐步实现
-   └── 编写单元测试
-
-3. 评审阶段
-   ├── 代码审查
-   ├── 测试覆盖率检查
-   └── 文档更新
-
-4. 发布阶段
-   ├── 合并到 master
-   ├── 更新 CHANGELOG
-   └── 发布 npm 包
+docs/versions/
+├── index.md           # 版本总览（本文件）
+├── v0.2-design.md     # v0.2 设计文档
+├── v0.3-design.md     # v0.3 设计文档
+└── v0.4-design.md     # v0.4 设计文档
 ```
 
-## 设计决策记录
+每个设计文档的结构：
 
-重要设计决策记录在 `docs/decisions/` 目录：
-
-- `ADR-001-external-verification.md` — 外部验证机制设计决策
-- `ADR-002-sandbox-isolation.md` — 沙箱隔离设计决策
-- `ADR-003-compaction-strategy.md` — Compaction 策略设计决策
-
-（待创建）
+1. **目标** — 本版本要解决什么问题
+2. **背景** — 为什么需要这个功能
+3. **设计** — 详细的 API 和架构设计
+4. **实现计划** — 分阶段实现步骤
+5. **验收标准** — 如何验证功能正确性
 
 ---
 
-## 相关文档
-
-- [PRD.md](../PRD.md) — 产品需求文档
-- [MEMORY.md](../../MEMORY.md) — 长期记忆（如果有）
+*最后更新：2025-02-25*
