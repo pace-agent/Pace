@@ -11,6 +11,7 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
-    "@pace-agent/core": "workspace:*"
+    "@pace-agent/core": "workspace:*",
+    "@pace-agent/llm-openai": "workspace:*"
   }
 }

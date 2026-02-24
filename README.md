@@ -2,17 +2,9 @@
 
 > Progressive Agent Computing Engine — a disciplined runtime for AI agents.
 
-Pace is a Node.js/TypeScript agent runtime framework that dramatically reduces context token consumption through progressive resource loading (L0/L1/L2), while providing built-in safety controls, smart termination, and full observability.
+Pace is a Node.js/TypeScript agent runtime framework that dramatically reduces context token consumption through progressive resource loading (L0/L1/L2), while providing built-in budget control and full observability.
 
-## Core Features
-
-**Progressive Loading** — All resources (tools, memory, skills, documents) follow a three-layer protocol. L0 indexes (~20 tokens each) are always available; L1 previews and L2 full payloads load only when needed. This cuts context token usage by 40%+.
-
-**Safe Execution** — Every side-effectful operation is described by an ActionContract with risk levels. The SecurityController automatically blocks dangerous operations based on configurable policies (open / balanced / strict).
-
-**Smart Termination** — Budget overruns, repeated errors, and stagnation trigger automatic shutdown with structured Failure Reports and actionable next-step suggestions instead of silent failures.
-
-**Full Observability** — Every resource load, LLM call, tool invocation, and policy decision emits structured JSONL trace events with token accounting, enabling precise cost analysis and optimization.
+[中文文档](./README.zh.md)
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -37,55 +29,78 @@ Pace is a Node.js/TypeScript agent runtime framework that dramatically reduces c
 └─────────────────────────────────────────────────┘
 ```
 
+## Core Features
+
+**Progressive Loading** — Resources follow a three-layer protocol. L0 indexes (~20–50 tokens each) are always injected; L1 previews load only for relevant resources; L2 full payloads load only at execution time. This cuts context token usage by 40–80% compared to full injection.
+
+**Relevance Scoring** — The ContextCompiler scores each resource against the user query using keyword matching (weight 0.6) plus a sticky bonus (weight 0.4) for resources used in previous turns. Only resources above threshold are promoted to L1.
+
+**Budget Control** — BudgetScheduler tracks token usage across both the full task and each individual turn, ensuring the runtime stays within configurable limits.
+
+**Full Observability** — Every resource load and LLM call emits a structured JSONL trace event with token counts and latency, written to `.pace/traces/`.
+
 ## Quick Start
 
 ```bash
-npm install @pace-agent/core @pace-agent/llm-openai @pace-agent/memory-file
+pnpm install
 ```
 
 ```typescript
 import { Pace } from "@pace-agent/core";
 import { OpenAIAdapter } from "@pace-agent/llm-openai";
-import { FileMemoryProvider } from "@pace-agent/memory-file";
 
 const agent = new Pace({
   llm: new OpenAIAdapter({ model: "gpt-4o" }),
-
-  resources: [
-    new FileMemoryProvider({ dir: ".pace/memory" }),
-    searchTool,
-    calculatorTool,
-  ],
-
-  budget: {
-    maxTokensPerTask: 20_000,
-    maxTokensPerTurn: 4_000,
-  },
-
-  security: "balanced",
-
-  termination: {
-    maxRetries: 2,
-    maxStagnation: 3,
+  resources: [myToolProvider, myMemoryProvider],
+  config: {
+    budget: { maxTokensPerTask: 20_000, maxTokensPerTurn: 4_000 },
   },
 });
 
-const result = await agent.run("Find the latest Node.js security advisories");
+const result = await agent.run("Search the web for the latest TypeScript release");
 console.log(result.reply);
-console.log(result.trace);       // TraceEvent[]
-console.log(result.tokenUsage);  // { input, output, context, total }
+console.log(result.tokenUsage);  // { inputTokens, outputTokens, contextTokens, totalTokens }
+console.log(result.trace);       // TraceEvent[] — resource loads, LLM calls
 ```
 
 ## Packages
 
-| Package | Description |
-|---------|-------------|
-| `@pace-agent/core` | Core runtime: types, ResourceRegistry, ContextCompiler, BudgetScheduler, Tracer |
-| `@pace-agent/security` | SecurityController + built-in policies (S0 rule engine) |
-| `@pace-agent/termination` | TerminationController + stop strategies (BudgetStop, RetryStop) |
-| `@pace-agent/memory-file` | File-system MemoryProvider with L0/L1/L2 support |
-| `@pace-agent/llm-openai` | OpenAI-compatible LLM adapter |
-| `@pace-agent/cli` | CLI demo tool |
+| Package | Status | Description |
+|---------|--------|-------------|
+| `@pace-agent/core` | ✅ Phase 1 | Core runtime: ResourceRegistry, ContextCompiler, BudgetScheduler, JsonlTracer, PaceRuntime |
+| `@pace-agent/llm-openai` | ✅ Phase 1 | OpenAI-compatible LLM adapter |
+| `@pace-agent/cli` | ✅ Phase 1 | CLI demo with token savings comparison |
+| `@pace-agent/security` | 🔜 Phase 2 | SecurityController + built-in policies |
+| `@pace-agent/termination` | 🔜 Phase 2 | TerminationController (BudgetStop, RetryStop, StagnationStop) |
+| `@pace-agent/memory-file` | 🔜 Phase 2 | File-system MemoryProvider with L0/L1/L2 support |
+
+## Implementing a ResourceProvider
+
+```typescript
+import type { ResourceProvider, L0Index, L1Preview, L2Payload } from "@pace-agent/core";
+
+class MyToolProvider implements ResourceProvider {
+  readonly type = "tool" as const;
+
+  async listL0(): Promise<L0Index[]> {
+    return [{ id: "tool:my_tool", name: "My Tool", description: "...", type: "tool", tags: ["example"], riskLevel: "low" }];
+  }
+
+  async getL1(id: string): Promise<L1Preview> {
+    return { id, name: "My Tool", description: "...", type: "tool", tags: ["example"],
+      summary: "Does X by doing Y.", parameterSummary: "input (string, required)" };
+  }
+
+  async getL2(id: string): Promise<L2Payload> {
+    return { ...await this.getL1(id), fullContent: "<full JSON schema>" };
+  }
+}
+
+const agent = new Pace({
+  llm: new OpenAIAdapter({ model: "gpt-4o" }),
+  resources: [new MyToolProvider()],
+});
+```
 
 ## Development
 
@@ -97,7 +112,7 @@ console.log(result.tokenUsage);  // { input, output, context, total }
 ### Setup
 
 ```bash
-git clone https://github.com/anthropics/pace.git
+git clone <repo-url>
 cd pace
 pnpm install
 ```
@@ -105,10 +120,20 @@ pnpm install
 ### Commands
 
 ```bash
+pnpm test         # Run all 37 tests
 pnpm build        # Build all packages
-pnpm test         # Run tests
-pnpm lint         # Lint all packages
+pnpm lint         # Lint
 pnpm clean        # Remove dist directories
+```
+
+### Run the Demo
+
+```bash
+# No API key required — uses MockLLMAdapter
+node packages/cli/src/index.ts
+
+# With real LLM
+OPENAI_API_KEY=sk-... node packages/cli/src/index.ts
 ```
 
 ### Project Structure
@@ -116,49 +141,50 @@ pnpm clean        # Remove dist directories
 ```
 pace/
 ├── packages/
-│   ├── core/           # Core types & runtime
-│   ├── security/       # Security controller
-│   ├── termination/    # Termination controller
-│   ├── memory-file/    # File-based memory provider
-│   ├── llm-openai/     # OpenAI adapter
-│   └── cli/            # CLI demo
+│   ├── core/src/
+│   │   ├── types/          # Phase 0: all interface definitions
+│   │   ├── registry/       # ResourceRegistry
+│   │   ├── compiler/       # ContextCompiler, TokenEstimator, types
+│   │   ├── budget/         # BudgetScheduler
+│   │   ├── trace/          # JsonlTracer
+│   │   └── runtime/        # PaceRuntime (exported as Pace)
+│   ├── llm-openai/         # OpenAI adapter
+│   └── cli/                # Demo entry + mock resources
 ├── docs/
-│   └── PRD.md          # Product requirements
-├── package.json        # Workspace root
-├── tsconfig.base.json  # Shared TS config
-└── vitest.config.ts    # Test config
+├── package.json
+├── tsconfig.base.json
+└── vitest.config.ts
 ```
 
 ## Roadmap
 
-### v0.1 — Core Runtime (MVP)
+### v0.1 — Phase 1: Core Runtime ✅
 
-- Resource three-layer protocol (L0/L1/L2)
-- ContextCompiler with rule-based relevance
-- BudgetScheduler + token tracking
-- SecurityController (S0 rules)
-- TerminationController (BudgetStop + RetryStop)
-- OpenAI-compatible LLM adapter
-- JSONL trace output
-- File-based memory provider
+- [x] L0/L1/L2 three-layer resource protocol
+- [x] ResourceRegistry with multi-provider aggregation and L0 cache
+- [x] ContextCompiler: keyword relevance scoring + sticky L1 + budget pruning
+- [x] BudgetScheduler: per-task and per-turn token accounting
+- [x] JsonlTracer: buffered JSONL event output
+- [x] PaceRuntime: multi-turn conversation with history accumulation
+- [x] OpenAI-compatible LLM adapter
+- [x] CLI demo with token savings comparison
 
-### v0.2 — Expansion
+### v0.2 — Phase 2: Safety & Termination 🔜
 
-- Multi-agent orchestration (manager-worker)
-- HTTP + Shell tool providers
-- StagnationStop detection
-- S1 security checks (dry-run)
-- Anthropic adapter
-- Config file loading (pace.config.yaml)
+- [ ] SecurityController (S0 rule engine: risk level evaluation)
+- [ ] TerminationController (BudgetStop, RetryStop, StagnationStop)
+- [ ] Tool execution loop (handle `finishReason === "tool_calls"`)
+- [ ] FileMemoryProvider
+- [ ] Anthropic adapter
 
-### v0.3 — Ecosystem
+### v0.3 — Phase 3: Ecosystem
 
-- MCP tool bridge
-- Redis / SQLite memory providers
-- LangChain / Vercel AI SDK integration
-- LLM-assisted relevance in ContextCompiler
-- Basic HTML dashboard
-- S2 security checks (LLM review)
+- [ ] Multi-agent orchestration (manager-worker)
+- [ ] MCP tool bridge
+- [ ] LLM-assisted relevance in ContextCompiler
+- [ ] Redis / SQLite memory providers
+- [ ] Config file loading (`pace.config.yaml`)
+- [ ] Basic HTML observability dashboard
 
 ## License
 

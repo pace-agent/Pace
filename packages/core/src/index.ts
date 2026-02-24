@@ -77,3 +77,23 @@ export type {
 // Config (values + types)
 export { PaceConfigSchema, parsePaceConfig } from "./types/config.js";
 export type { PaceConfig, PaceConfigInput } from "./types/config.js";
+
+// Registry
+export { ResourceRegistry } from "./registry/ResourceRegistry.js";
+
+// Compiler
+export { ContextCompiler } from "./compiler/ContextCompiler.js";
+export { TokenEstimator } from "./compiler/TokenEstimator.js";
+export type { ContextBlock, RelevanceScore, CompileResult } from "./compiler/types.js";
+
+// Budget
+export { BudgetScheduler } from "./budget/BudgetScheduler.js";
+export type { BudgetSchedulerOptions } from "./budget/BudgetScheduler.js";
+
+// Trace
+export { JsonlTracer } from "./trace/JsonlTracer.js";
+export type { JsonlTracerOptions } from "./trace/JsonlTracer.js";
+
+// Runtime
+export { PaceRuntime as Pace } from "./runtime/PaceRuntime.js";
+export type { PaceRuntimeOptions, RunResult } from "./runtime/PaceRuntime.js";
