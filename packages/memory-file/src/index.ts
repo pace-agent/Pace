@@ -1,1 +1,1 @@
-export {};
+export { FileMemoryProvider } from "./FileMemoryProvider.js";

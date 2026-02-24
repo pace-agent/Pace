@@ -34,7 +34,20 @@ export class OpenAIAdapter implements LLMAdapter {
         case "user":
           return { role: "user", content: m.content, ...(m.name ? { name: m.name } : {}) };
         case "assistant":
-          return { role: "assistant", content: m.content, ...(m.name ? { name: m.name } : {}) };
+          return {
+            role: "assistant",
+            content: m.content,
+            ...(m.name ? { name: m.name } : {}),
+            ...(m.toolCalls
+              ? {
+                  tool_calls: m.toolCalls.map((tc) => ({
+                    id: tc.id,
+                    type: "function" as const,
+                    function: { name: tc.name, arguments: tc.arguments },
+                  })),
+                }
+              : {}),
+          };
         case "tool":
           return { role: "tool", content: m.content, tool_call_id: m.toolCallId ?? "" };
       }

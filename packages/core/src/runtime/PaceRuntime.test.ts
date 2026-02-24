@@ -3,6 +3,7 @@ import { PaceRuntime } from "./PaceRuntime.js";
 import type { LLMAdapter, Message, LLMResponse } from "../types/llm.js";
 import type { ResourceProvider, L0Index, L1Preview, L2Payload } from "../types/resource.js";
 import type { TraceWriter } from "../types/trace.js";
+import type { ToolProvider, ToolDefinition } from "../types/tool.js";
 
 function makeAdapter(): LLMAdapter {
   return {
@@ -37,6 +38,45 @@ function makeProvider(type: ResourceProvider["type"], ids: string[]): ResourcePr
   };
 }
 
+/** A ResourceProvider that also implements ToolProvider */
+function makeToolProvider(): ResourceProvider & ToolProvider {
+  const toolDef: ToolDefinition = {
+    name: "web_search",
+    description: "Search the web",
+    tags: ["search"],
+    risk: "low" as const,
+    preview: "Search the web for information",
+    parameters: { type: "object", properties: { query: { type: "string" } } },
+    execute: async () => ({ results: [] }),
+  };
+  return {
+    type: "tool" as const,
+    listL0: vi.fn().mockResolvedValue([{
+      id: "tool:web_search",
+      name: "Web Search",
+      description: "Search the web",
+      type: "tool" as const,
+      tags: ["search"],
+    }]),
+    getL1: vi.fn().mockResolvedValue({
+      id: "tool:web_search",
+      name: "Web Search",
+      description: "Search the web",
+      type: "tool" as const,
+      tags: ["search"],
+      summary: "Search the web for current information",
+    }),
+    getL2: vi.fn().mockResolvedValue({} as L2Payload),
+    listTools: vi.fn().mockResolvedValue([toolDef]),
+    getTool: vi.fn().mockResolvedValue(toolDef),
+    executeTool: vi.fn().mockResolvedValue({
+      success: true,
+      output: { results: ["TypeScript 5.4 advisory"] },
+      latencyMs: 50,
+    }),
+  };
+}
+
 function makeTracer(): TraceWriter {
   return {
     write: vi.fn(),
@@ -44,7 +84,7 @@ function makeTracer(): TraceWriter {
   };
 }
 
-describe("PaceRuntime", () => {
+describe("PaceRuntime — basic", () => {
   let adapter: LLMAdapter;
   let tracer: TraceWriter;
 
@@ -107,20 +147,107 @@ describe("PaceRuntime", () => {
     expect(result.tokenUsage.totalTokens).toBe(170);
   });
 
-  it("warns but does not fail on tool_calls finish reason", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    (adapter.chat as ReturnType<typeof vi.fn>).mockResolvedValue({
+  it("normal run has stopped=false and toolCallsExecuted=0", async () => {
+    const runtime = new PaceRuntime({ llm: adapter, tracer });
+    const result = await runtime.run("Hello");
+    expect(result.stopped).toBe(false);
+    expect(result.toolCallsExecuted).toBe(0);
+  });
+});
+
+describe("PaceRuntime — agentic loop", () => {
+  let tracer: TraceWriter;
+
+  beforeEach(() => {
+    tracer = makeTracer();
+  });
+
+  it("executes tool call and returns final reply", async () => {
+    const toolCallsResp: LLMResponse = {
+      content: "I'll search for that.",
+      toolCalls: [{ id: "tc1", name: "web_search", arguments: '{"query":"TypeScript"}' }],
+      usage: { inputTokens: 100, outputTokens: 15 },
+      finishReason: "tool_calls",
+    };
+    const finalResp: LLMResponse = {
+      content: "Here are the search results.",
+      usage: { inputTokens: 150, outputTokens: 30 },
+      finishReason: "stop",
+    };
+    const adapter: LLMAdapter = {
+      chat: vi.fn()
+        .mockResolvedValueOnce(toolCallsResp)
+        .mockResolvedValueOnce(finalResp),
+      estimateTokens: (t) => Math.ceil(t.length / 4),
+    };
+
+    const toolProvider = makeToolProvider();
+    const runtime = new PaceRuntime({ llm: adapter, tracer, resources: [toolProvider] });
+    const result = await runtime.run("Search for TypeScript security");
+
+    expect(result.reply).toBe("Here are the search results.");
+    expect(result.stopped).toBe(false);
+    expect(result.toolCallsExecuted).toBe(1);
+
+    const toolEvents = result.trace.filter((e) => e.type === "TOOL_INVOKED");
+    expect(toolEvents).toHaveLength(1);
+    expect(toolEvents[0]!.type === "TOOL_INVOKED" && (toolEvents[0] as { toolName: string }).toolName).toBe("web_search");
+  });
+
+  it("stops with 'retry' reason after consecutive tool errors (no provider)", async () => {
+    const toolCallsResp: LLMResponse = {
       content: "",
       toolCalls: [{ id: "tc1", name: "web_search", arguments: "{}" }],
       usage: { inputTokens: 100, outputTokens: 10 },
       finishReason: "tool_calls",
-    });
+    };
+    const adapter: LLMAdapter = {
+      chat: vi.fn().mockResolvedValue(toolCallsResp),
+      estimateTokens: (t) => Math.ceil(t.length / 4),
+    };
 
-    const runtime = new PaceRuntime({ llm: adapter, tracer });
+    const runtime = new PaceRuntime({
+      llm: adapter,
+      tracer,
+      config: { termination: { maxRetries: 2 } },
+    });
     const result = await runtime.run("Search for me");
 
-    expect(result.finishReason).toBe("tool_calls");
-    expect(warnSpy).toHaveBeenCalled();
-    warnSpy.mockRestore();
+    expect(result.stopped).toBe(true);
+    expect(result.stopReason).toBe("retry");
+    expect(result.toolCallsExecuted).toBe(0);
+
+    const stopEvent = result.trace.find((e) => e.type === "STOP_TRIGGERED");
+    expect(stopEvent).toBeDefined();
+  });
+
+  it("injects tool result into next LLM call messages", async () => {
+    const toolCallsResp: LLMResponse = {
+      content: "searching...",
+      toolCalls: [{ id: "tc1", name: "web_search", arguments: '{"query":"test"}' }],
+      usage: { inputTokens: 100, outputTokens: 10 },
+      finishReason: "tool_calls",
+    };
+    const finalResp: LLMResponse = {
+      content: "Done.",
+      usage: { inputTokens: 200, outputTokens: 20 },
+      finishReason: "stop",
+    };
+    const adapter: LLMAdapter = {
+      chat: vi.fn()
+        .mockResolvedValueOnce(toolCallsResp)
+        .mockResolvedValueOnce(finalResp),
+      estimateTokens: (t) => Math.ceil(t.length / 4),
+    };
+
+    const toolProvider = makeToolProvider();
+    const runtime = new PaceRuntime({ llm: adapter, tracer, resources: [toolProvider] });
+    await runtime.run("Search");
+
+    // Second chat call should include a "tool" role message
+    const secondCall = (adapter.chat as ReturnType<typeof vi.fn>).mock.calls[1][0];
+    const toolMessages = (secondCall.messages as Message[]).filter((m) => m.role === "tool");
+    expect(toolMessages).toHaveLength(1);
+    expect(toolMessages[0]!.toolCallId).toBe("tc1");
   });
 });

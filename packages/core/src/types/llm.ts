@@ -8,7 +8,10 @@ export interface Message {
   role: MessageRole;
   content: string;
   name?: string;
+  /** Tool call result ID — used when role="tool" */
   toolCallId?: string;
+  /** Tool calls requested by the LLM — used when role="assistant" */
+  toolCalls?: ToolCall[];
 }
 
 /** Tool call requested by the LLM */
