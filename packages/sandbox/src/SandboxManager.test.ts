@@ -250,8 +250,12 @@ describe("SandboxManager", () => {
 
       const changes = await manager.getChanges();
 
-      // Note: This test needs adjustment based on actual implementation
-      // For now, we're testing the getFileChange method directly
+      expect(changes).toHaveLength(1);
+      expect(changes[0]).toMatchObject({
+        path: "src/new.ts",
+        type: "created",
+      });
+      expect(changes[0].risk).toBeDefined();
     });
   });
 
