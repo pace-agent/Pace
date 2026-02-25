@@ -19,6 +19,15 @@ export type {
   ActionContract,
 } from "./types/action.js";
 
+// Task Completion types (v0.2)
+export type {
+  TaskCompletion,
+  TaskCompletionResult,
+  ExtendedStopReason,
+  CompletionContext,
+  CompletionCheckResult,
+} from "./types/completion.js";
+
 // Trace types
 export type {
   TraceEventBase,
@@ -30,6 +39,9 @@ export type {
   StopTriggeredEvent,
   CheckpointEvent,
   RelevanceScoringEvent,
+  TaskCompletionCheckEvent,
+  TaskIterationEvent,
+  TaskCompletionStopEvent,
   TraceEvent,
   TraceWriter,
 } from "./types/trace.js";
@@ -95,6 +107,10 @@ export type { BudgetSchedulerOptions } from "./budget/BudgetScheduler.js";
 // Trace
 export { JsonlTracer } from "./trace/JsonlTracer.js";
 export type { JsonlTracerOptions } from "./trace/JsonlTracer.js";
+
+// Completion (v0.2)
+export { CompletionController } from "./completion/CompletionController.js";
+export type { CompletionControllerOptions } from "./completion/CompletionController.js";
 
 // Runtime
 export { PaceRuntime as Pace } from "./runtime/PaceRuntime.js";

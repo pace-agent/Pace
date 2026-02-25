@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { SecurityProfile } from "./security.js";
+import type { TaskCompletion } from "./completion.js";
 
 // ---- Configuration Schema ----
 
@@ -44,6 +45,12 @@ export const PaceConfigSchema = z.object({
       scoringMaxTokens: z.number().positive().default(256),
     })
     .default({}),
+
+  /**
+   * Task completion verification (optional).
+   * Enables external verification of task completion.
+   */
+  taskCompletion: z.custom<TaskCompletion>().optional(),
 });
 
 /** Inferred TypeScript type from the Zod schema */
