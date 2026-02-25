@@ -103,6 +103,12 @@ export class GuardrailsManager {
       return existingRule;
     }
 
+    // Check if we've reached maxRules limit
+    if (this.rules.size >= this.maxRules) {
+      // Evict the oldest rule with lowest hit count
+      await this.evictRule();
+    }
+
     // Add new rule
     this.rules.set(rule.id, rule);
     await this.saveRule(rule);
@@ -122,6 +128,49 @@ export class GuardrailsManager {
     this.onRuleLearned?.(rule);
 
     return rule;
+  }
+
+  /**
+   * Evict the oldest rule with lowest hit count when maxRules is reached.
+   */
+  private async evictRule(): Promise<void> {
+    if (this.rules.size === 0) {
+      return;
+    }
+
+    // Find rule with lowest hit count (and oldest among ties)
+    let lowestRule: GuardrailRule | null = null;
+    let lowestKey: string | null = null;
+
+    for (const [key, rule] of this.rules) {
+      if (!lowestRule) {
+        lowestRule = rule;
+        lowestKey = key;
+        continue;
+      }
+
+      // Lower hit count wins
+      if (rule.hitCount < lowestRule.hitCount) {
+        lowestRule = rule;
+        lowestKey = key;
+      } else if (rule.hitCount === lowestRule.hitCount) {
+        // On tie, older rule wins (to be evicted)
+        if (rule.createdAt < lowestRule.createdAt) {
+          lowestRule = rule;
+          lowestKey = key;
+        }
+      }
+    }
+
+    if (lowestKey && lowestRule) {
+      // Delete from memory and storage
+      this.rules.delete(lowestKey);
+      try {
+        await unlink(join(this.storageDir, `${lowestRule.id}.json`));
+      } catch {
+        // Ignore if file doesn't exist
+      }
+    }
   }
 
   /**

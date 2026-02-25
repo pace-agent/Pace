@@ -312,4 +312,148 @@ describe("GuardrailsManager", () => {
       expect(rules[0].trigger.toolName).toBe("test_tool");
     });
   });
+
+  describe("maxRules enforcement", () => {
+    it("should respect maxRules limit", async () => {
+      const manager = new GuardrailsManager({ storageDir, maxRules: 2 });
+      await manager.initialize();
+
+      // Add 3 different rules
+      await manager.learnFromFailure({
+        tool: "tool1",
+        error: "error1",
+        context: "context1",
+        timestamp: Date.now(),
+      });
+
+      await manager.learnFromFailure({
+        tool: "tool2",
+        error: "error2",
+        context: "context2",
+        timestamp: Date.now(),
+      });
+
+      await manager.learnFromFailure({
+        tool: "tool3",
+        error: "error3",
+        context: "context3",
+        timestamp: Date.now(),
+      });
+
+      // Should only have 2 rules (maxRules limit)
+      const rules = await manager.getRules();
+      expect(rules).toHaveLength(2);
+    });
+
+    it("should evict oldest rule with lowest hit count when limit reached", async () => {
+      const manager = new GuardrailsManager({ storageDir, maxRules: 2 });
+      await manager.initialize();
+
+      // Add first rule
+      const rule1 = await manager.learnFromFailure({
+        tool: "tool1",
+        error: "error1",
+        context: "context1",
+        timestamp: Date.now(),
+      });
+
+      // Add second rule and trigger it once (higher hit count)
+      const rule2 = await manager.learnFromFailure({
+        tool: "tool2",
+        error: "error2",
+        context: "context2",
+        timestamp: Date.now(),
+      });
+
+      // Trigger rule2 to increase its hit count
+      await manager.checkTrigger({
+        currentTool: "tool2",
+        recentErrors: ["error2"],
+        consecutiveFailures: 0,
+        turnNumber: 1,
+      });
+
+      // Add third rule - should evict rule1 (lower hit count)
+      await manager.learnFromFailure({
+        tool: "tool3",
+        error: "error3",
+        context: "context3",
+        timestamp: Date.now(),
+      });
+
+      const rules = await manager.getRules();
+      expect(rules).toHaveLength(2);
+
+      // rule1 should be evicted (had lower hit count)
+      const ruleIds = rules.map((r) => r.id);
+      expect(ruleIds).not.toContain(rule1.id);
+      expect(ruleIds).toContain(rule2.id);
+    });
+
+    it("should not add new rule when similar exists, even at limit", async () => {
+      const manager = new GuardrailsManager({ storageDir, maxRules: 1 });
+      await manager.initialize();
+
+      // Add first rule
+      await manager.learnFromFailure({
+        tool: "tool1",
+        error: "error1",
+        context: "context1",
+        timestamp: Date.now(),
+      });
+
+      // Try to add similar rule (same tool and error)
+      await manager.learnFromFailure({
+        tool: "tool1",
+        error: "error1",
+        context: "different context",
+        timestamp: Date.now(),
+      });
+
+      // Should still have 1 rule (similar, not new)
+      const rules = await manager.getRules();
+      expect(rules).toHaveLength(1);
+    });
+  });
+
+  describe("applySuggestion", () => {
+    it("should increment hit count when suggestion applied", async () => {
+      const manager = new GuardrailsManager({ storageDir });
+      await manager.initialize();
+
+      const rule = await manager.learnFromFailure({
+        tool: "test_tool",
+        error: "test error",
+        context: "test context",
+        timestamp: Date.now(),
+      });
+
+      const initialHitCount = rule.hitCount;
+      await manager.applySuggestion(rule);
+
+      expect(rule.hitCount).toBe(initialHitCount + 1);
+    });
+
+    it("should persist updated hit count after applySuggestion", async () => {
+      const manager1 = new GuardrailsManager({ storageDir });
+      await manager1.initialize();
+
+      const rule = await manager1.learnFromFailure({
+        tool: "test_tool",
+        error: "test error",
+        context: "test context",
+        timestamp: Date.now(),
+      });
+
+      await manager1.applySuggestion(rule);
+      const hitCountAfterApply = rule.hitCount;
+
+      // Create new manager instance
+      const manager2 = new GuardrailsManager({ storageDir });
+      await manager2.initialize();
+
+      const rules = await manager2.getRules();
+      expect(rules[0].hitCount).toBe(hitCountAfterApply);
+    });
+  });
 });
