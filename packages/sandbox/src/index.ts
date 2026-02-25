@@ -1,4 +1,5 @@
 export { SandboxManager, type SandboxManagerOptions } from "./SandboxManager.js";
+export { MergeManager, type ChangeReport, ApprovalDecision, MergeManagerOptions } from "./merge.js";
 export type {
   SandboxConfig,
   SandboxLimits,
