@@ -1,4 +1,5 @@
 import type { ResourceLevel } from "./resource.js";
+import type { TaskCompletionResult, ExtendedStopReason } from "./completion.js";
 
 // ---- Trace Events ----
 
@@ -66,6 +67,40 @@ export interface RelevanceScoringEvent extends TraceEventBase {
   fallbackUsed?: boolean;
 }
 
+// ---- Task Completion Events ----
+
+export interface TaskCompletionCheckEvent extends TraceEventBase {
+  type: "TASK_COMPLETION_CHECK";
+  /** The verification result */
+  result: TaskCompletionResult;
+  /** Current iteration number */
+  iteration: number;
+  /** Time taken to verify (ms) */
+  latencyMs: number;
+}
+
+export interface TaskIterationEvent extends TraceEventBase {
+  type: "TASK_ITERATION";
+  /** Current iteration number (1-indexed) */
+  iteration: number;
+  /** Maximum iterations if set */
+  maxIterations?: number;
+  /** Tokens consumed so far */
+  totalTokens: number;
+  /** Cost so far in USD */
+  totalCost: number;
+}
+
+export interface TaskCompletionStopEvent extends TraceEventBase {
+  type: "TASK_COMPLETION_STOP";
+  /** Why we stopped */
+  reason: ExtendedStopReason;
+  /** Final verification result (if stopped due to completion) */
+  verification?: TaskCompletionResult;
+  /** Total iterations completed */
+  totalIterations: number;
+}
+
 /** Union of all trace event types */
 export type TraceEvent =
   | LLMCallStartEvent
@@ -75,7 +110,10 @@ export type TraceEvent =
   | PolicyDecisionEvent
   | StopTriggeredEvent
   | CheckpointEvent
-  | RelevanceScoringEvent;
+  | RelevanceScoringEvent
+  | TaskCompletionCheckEvent
+  | TaskIterationEvent
+  | TaskCompletionStopEvent;
 
 /**
  * TraceWriter — interface for recording trace events.
