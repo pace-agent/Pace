@@ -536,4 +536,159 @@ describe("CompletionController", () => {
       expect(verifyMock).not.toHaveBeenCalled();
     });
   });
+
+  describe("configuration validation", () => {
+    it("should throw error for checkInterval = 0", () => {
+      const taskCompletion: TaskCompletion = {
+        verifyCompletion: vi.fn().mockResolvedValue({
+          complete: false,
+          reason: "Not done",
+        }),
+        checkInterval: 0,
+      };
+
+      expect(() => {
+        new CompletionController({
+          taskCompletion,
+          traceWriter: mockTraceWriter,
+        });
+      }).toThrow("checkInterval must be a positive integer >= 1");
+    });
+
+    it("should throw error for checkInterval < 0", () => {
+      const taskCompletion: TaskCompletion = {
+        verifyCompletion: vi.fn().mockResolvedValue({
+          complete: false,
+          reason: "Not done",
+        }),
+        checkInterval: -1,
+      };
+
+      expect(() => {
+        new CompletionController({
+          taskCompletion,
+          traceWriter: mockTraceWriter,
+        });
+      }).toThrow("checkInterval must be a positive integer >= 1");
+    });
+
+    it("should throw error for checkInterval = 0.5 (non-integer)", () => {
+      const taskCompletion: TaskCompletion = {
+        verifyCompletion: vi.fn().mockResolvedValue({
+          complete: false,
+          reason: "Not done",
+        }),
+        checkInterval: 0.5,
+      };
+
+      expect(() => {
+        new CompletionController({
+          taskCompletion,
+          traceWriter: mockTraceWriter,
+        });
+      }).toThrow("checkInterval must be a positive integer >= 1");
+    });
+
+    it("should throw error for maxIterations < 1", () => {
+      const taskCompletion: TaskCompletion = {
+        verifyCompletion: vi.fn().mockResolvedValue({
+          complete: false,
+          reason: "Not done",
+        }),
+        maxIterations: 0,
+      };
+
+      expect(() => {
+        new CompletionController({
+          taskCompletion,
+          traceWriter: mockTraceWriter,
+        });
+      }).toThrow("maxIterations must be a positive integer");
+    });
+
+    it("should throw error for maxTokens < 1", () => {
+      const taskCompletion: TaskCompletion = {
+        verifyCompletion: vi.fn().mockResolvedValue({
+          complete: false,
+          reason: "Not done",
+        }),
+        maxTokens: 0,
+      };
+
+      expect(() => {
+        new CompletionController({
+          taskCompletion,
+          traceWriter: mockTraceWriter,
+        });
+      }).toThrow("maxTokens must be a positive number");
+    });
+
+    it("should throw error for maxCost < 0", () => {
+      const taskCompletion: TaskCompletion = {
+        verifyCompletion: vi.fn().mockResolvedValue({
+          complete: false,
+          reason: "Not done",
+        }),
+        maxCost: -0.01,
+      };
+
+      expect(() => {
+        new CompletionController({
+          taskCompletion,
+          traceWriter: mockTraceWriter,
+        });
+      }).toThrow("maxCost must be a non-negative number");
+    });
+
+    it("should accept valid checkInterval = 1", () => {
+      const taskCompletion: TaskCompletion = {
+        verifyCompletion: vi.fn().mockResolvedValue({
+          complete: false,
+          reason: "Not done",
+        }),
+        checkInterval: 1,
+      };
+
+      expect(() => {
+        new CompletionController({
+          taskCompletion,
+          traceWriter: mockTraceWriter,
+        });
+      }).not.toThrow();
+    });
+
+    it("should accept valid checkInterval = 5", () => {
+      const taskCompletion: TaskCompletion = {
+        verifyCompletion: vi.fn().mockResolvedValue({
+          complete: false,
+          reason: "Not done",
+        }),
+        checkInterval: 5,
+      };
+
+      expect(() => {
+        new CompletionController({
+          taskCompletion,
+          traceWriter: mockTraceWriter,
+        });
+      }).not.toThrow();
+    });
+
+    it("should accept maxCost = 0", () => {
+      const taskCompletion: TaskCompletion = {
+        verifyCompletion: vi.fn().mockResolvedValue({
+          complete: false,
+          reason: "Not done",
+        }),
+        maxCost: 0,
+      };
+
+      expect(() => {
+        new CompletionController({
+          taskCompletion,
+          traceWriter: mockTraceWriter,
+        });
+      }).not.toThrow();
+    });
+  });
 });

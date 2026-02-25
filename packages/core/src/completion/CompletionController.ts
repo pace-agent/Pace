@@ -88,6 +88,43 @@ export class CompletionController {
     this.traceWriter = options.traceWriter;
     this.onCompletion = options.onCompletion;
     this.onLimitExceeded = options.onLimitExceeded;
+
+    // Validate checkInterval
+    this.validateConfig();
+  }
+
+  /**
+   * Validate task completion configuration.
+   * Throws an error if configuration is invalid.
+   */
+  private validateConfig(): void {
+    const { checkInterval, maxIterations, maxTokens, maxCost } = this.taskCompletion;
+
+    if (checkInterval !== undefined) {
+      if (!Number.isInteger(checkInterval) || checkInterval < 1) {
+        throw new Error(
+          `TaskCompletion.checkInterval must be a positive integer >= 1, got: ${checkInterval}`
+        );
+      }
+    }
+
+    if (maxIterations !== undefined && maxIterations < 1) {
+      throw new Error(
+        `TaskCompletion.maxIterations must be a positive integer, got: ${maxIterations}`
+      );
+    }
+
+    if (maxTokens !== undefined && maxTokens < 1) {
+      throw new Error(
+        `TaskCompletion.maxTokens must be a positive number, got: ${maxTokens}`
+      );
+    }
+
+    if (maxCost !== undefined && maxCost < 0) {
+      throw new Error(
+        `TaskCompletion.maxCost must be a non-negative number, got: ${maxCost}`
+      );
+    }
   }
 
   /**

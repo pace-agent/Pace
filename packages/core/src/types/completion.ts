@@ -31,7 +31,8 @@ export interface TaskCompletion {
 
   /**
    * Maximum total token consumption before forced stop.
-   * Optional - if not set, uses the budget from PaceConfig.
+   * Optional - if not set, no token limit is enforced by this controller.
+   * Note: This is separate from PaceConfig.budget.maxTokensPerTask.
    */
   maxTokens?: number;
 
@@ -44,6 +45,7 @@ export interface TaskCompletion {
   /**
    * How often to check completion (in turns).
    * Default: 1 (check after every turn).
+   * Must be a positive integer >= 1.
    * Set higher to reduce overhead if verification is expensive.
    */
   checkInterval?: number;
