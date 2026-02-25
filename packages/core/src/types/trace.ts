@@ -142,6 +142,31 @@ export interface SandboxDiscardEvent extends TraceEventBase {
   changes: string[];
 }
 
+// ---- Guardrails Events (v0.2 Phase 4) ----
+
+export interface GuardrailLearnedEvent extends TraceEventBase {
+  type: "GUARDRAIL_LEARNED";
+  rule: {
+    id: string;
+    description: string;
+    suggestion: string;
+  };
+}
+
+export interface GuardrailTriggeredEvent extends TraceEventBase {
+  type: "GUARDRAIL_TRIGGERED";
+  rule: {
+    id: string;
+    description: string;
+    suggestion: string;
+  };
+  context: {
+    currentTool?: string;
+    consecutiveFailures: number;
+    turnNumber: number;
+  };
+}
+
 /** Union of all trace event types */
 export type TraceEvent =
   | LLMCallStartEvent
@@ -159,7 +184,9 @@ export type TraceEvent =
   | SandboxFileSyncEvent
   | SandboxMergeEndEvent
   | SandboxMergeErrorEvent
-  | SandboxDiscardEvent;
+  | SandboxDiscardEvent
+  | GuardrailLearnedEvent
+  | GuardrailTriggeredEvent;
 
 /**
  * TraceWriter — interface for recording trace events.

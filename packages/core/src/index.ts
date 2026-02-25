@@ -47,6 +47,8 @@ export type {
   SandboxMergeEndEvent,
   SandboxMergeErrorEvent,
   SandboxDiscardEvent,
+  GuardrailLearnedEvent,
+  GuardrailTriggeredEvent,
   TraceEvent,
   TraceWriter,
 } from "./types/trace.js";
@@ -116,6 +118,15 @@ export type { JsonlTracerOptions } from "./trace/JsonlTracer.js";
 // Completion (v0.2)
 export { CompletionController } from "./completion/CompletionController.js";
 export type { CompletionControllerOptions } from "./completion/CompletionController.js";
+
+// Guardrails (v0.2 Phase 4)
+export { GuardrailsManager } from "./guardrails/GuardrailsManager.js";
+export type {
+  GuardrailRule,
+  FailureContext,
+  ExecutionContext,
+  GuardrailsManagerOptions,
+} from "./guardrails/types.js";
 
 // Runtime
 export { PaceRuntime as Pace } from "./runtime/PaceRuntime.js";
