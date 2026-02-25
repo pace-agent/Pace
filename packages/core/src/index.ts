@@ -128,6 +128,17 @@ export type {
   GuardrailsManagerOptions,
 } from "./guardrails/types.js";
 
+// Tool Executor (v0.3)
+export { ToolExecutor, type ToolExecutorOptions } from "./tools/ToolExecutor.js";
+export { builtinTools } from "./tools/builtin.js";
+export type {
+  ToolDefinition as ExecutorToolDefinition,
+  ToolCall,
+  ToolResult as ExecutorToolResult,
+  ToolHandler,
+  ToolContext,
+} from "./tools/types.js";
+
 // Runtime
 export { PaceRuntime as Pace } from "./runtime/PaceRuntime.js";
 export type { PaceRuntimeOptions, RunResult } from "./runtime/PaceRuntime.js";

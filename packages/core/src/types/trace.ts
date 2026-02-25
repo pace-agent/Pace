@@ -167,6 +167,17 @@ export interface GuardrailTriggeredEvent extends TraceEventBase {
   };
 }
 
+// ---- Tool Execution Events (v0.3) ----
+
+export interface ToolExecutionEvent extends TraceEventBase {
+  type: "TOOL_EXECUTION";
+  toolCallId: string;
+  toolName: string;
+  success: boolean;
+  error?: string;
+  latencyMs: number;
+}
+
 /** Union of all trace event types */
 export type TraceEvent =
   | LLMCallStartEvent
@@ -186,7 +197,8 @@ export type TraceEvent =
   | SandboxMergeErrorEvent
   | SandboxDiscardEvent
   | GuardrailLearnedEvent
-  | GuardrailTriggeredEvent;
+  | GuardrailTriggeredEvent
+  | ToolExecutionEvent;
 
 /**
  * TraceWriter — interface for recording trace events.
