@@ -42,6 +42,11 @@ export type {
   TaskCompletionCheckEvent,
   TaskIterationEvent,
   TaskCompletionStopEvent,
+  SandboxInitEvent,
+  SandboxFileSyncEvent,
+  SandboxMergeEndEvent,
+  SandboxMergeErrorEvent,
+  SandboxDiscardEvent,
   TraceEvent,
   TraceWriter,
 } from "./types/trace.js";

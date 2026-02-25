@@ -101,6 +101,47 @@ export interface TaskCompletionStopEvent extends TraceEventBase {
   totalIterations: number;
 }
 
+// ---- Sandbox Events (v0.2) ----
+
+/** Sandbox configuration for trace events */
+export interface SandboxConfigForTrace {
+  workspaceRoot: string;
+  sourceRoot: string;
+  networkMode: string;
+}
+
+export interface SandboxInitEvent extends TraceEventBase {
+  type: "SANDBOX_INIT";
+  config: SandboxConfigForTrace;
+}
+
+export interface SandboxFileSyncEvent extends TraceEventBase {
+  type: "SANDBOX_FILE_SYNC";
+  sourcePath: string;
+  workspacePath: string;
+}
+
+export interface SandboxMergeEndEvent extends TraceEventBase {
+  type: "SANDBOX_MERGE_END";
+  result: {
+    success: boolean;
+    mergedFiles: string[];
+    skippedFiles: string[];
+    conflicts: string[];
+  };
+}
+
+export interface SandboxMergeErrorEvent extends TraceEventBase {
+  type: "SANDBOX_MERGE_ERROR";
+  path: string;
+  error: string;
+}
+
+export interface SandboxDiscardEvent extends TraceEventBase {
+  type: "SANDBOX_DISCARD";
+  changes: string[];
+}
+
 /** Union of all trace event types */
 export type TraceEvent =
   | LLMCallStartEvent
@@ -113,7 +154,12 @@ export type TraceEvent =
   | RelevanceScoringEvent
   | TaskCompletionCheckEvent
   | TaskIterationEvent
-  | TaskCompletionStopEvent;
+  | TaskCompletionStopEvent
+  | SandboxInitEvent
+  | SandboxFileSyncEvent
+  | SandboxMergeEndEvent
+  | SandboxMergeErrorEvent
+  | SandboxDiscardEvent;
 
 /**
  * TraceWriter — interface for recording trace events.
